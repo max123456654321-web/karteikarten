@@ -184,6 +184,7 @@ window.MathJax = {
   .flashcard .divider { border: none; border-top: 1px solid var(--line); margin: 22px 0; }
   .flashcard img { max-width: 100%; height: auto; border-radius: 10px; }
   .cloze-answer { color: var(--good); font-weight: 700; }
+  .anki-card-scope { display: block; }
   #card-back-wrap { animation: reveal-in .3s ease; }
   @keyframes reveal-in {
     from { opacity: 0; transform: translateY(-4px); }
@@ -205,6 +206,9 @@ window.MathJax = {
   .answer-buttons .btn-good { background: linear-gradient(135deg, var(--good), #468a63); }
   .answer-buttons .btn-easy { background: linear-gradient(135deg, var(--easy), #3a749f); }
   .answer-buttons button .sub { display: block; font-size: .72rem; font-weight: 400; opacity: .85; margin-top: 2px; }
+
+  .browse-nav { display: flex; gap: 10px; margin-top: 20px; }
+  .browse-nav button { flex: 1; }
 
   .session-summary {
     background: var(--card-bg); border-radius: var(--radius); padding: 40px 24px;
@@ -446,7 +450,9 @@ async function parseApkg(file) {
     frontHtml = insertMedia(frontHtml, mediaUrls);
     backHtml = insertMedia(backHtml, mediaUrls);
 
-    parsedCards.push({ front: frontHtml, back: backHtml });
+    // Die CSS des Notiztyps wird mitgenommen, damit z.B. Multiple-Choice-Layouts,
+    // Farben und Abstände wie im echten Anki dargestellt werden können.
+    parsedCards.push({ front: frontHtml, back: backHtml, css: model.css || '' });
   }
 
   db.close();
@@ -512,6 +518,25 @@ function renderCloze(text, ord, isFront) {
       return `<span class="cloze-answer">${content}</span>`;
     }
     return content;
+  });
+}
+
+// Beschränkt die vom Notiztyp mitgelieferte CSS auf unseren Karten-Wrapper,
+// damit sie nicht den Rest der App beeinflusst. ".card" ist Ankis Konvention
+// für den äußeren Karten-Container und wird direkt auf die Wrapper-Klasse gemappt.
+// (Einfache, regelbasierte Lösung — deckt die typische flache CSS-Struktur von
+// Anki-Notiztypen ab; @media-Bedingungen werden dabei unverändert durchgereicht.)
+function scopeCss(css, scopeClass) {
+  if (!css) return '';
+  return css.replace(/([^{}]+)\{([^{}]*)\}/g, (match, selectorPart, body) => {
+    const trimmed = selectorPart.trim();
+    if (trimmed.startsWith('@')) return match;
+    const scoped = trimmed.split(',').map(sel => {
+      sel = sel.trim();
+      if (sel === '.card') return `.${scopeClass}`;
+      return `.${scopeClass} ${sel}`;
+    }).join(', ');
+    return `${scoped} { ${body} }`;
   });
 }
 
@@ -616,6 +641,7 @@ async function renderHome() {
           </div>
           <div class="deck-actions">
             <button class="primary" data-action="study" data-id="${deck.id}" ${cards.length === 0 ? 'disabled' : ''}>Lernen starten</button>
+            <button class="secondary" data-action="browse" data-id="${deck.id}" ${cards.length === 0 ? 'disabled' : ''}>Durchsehen</button>
             <button class="delete-btn" data-action="delete" data-id="${deck.id}">Löschen</button>
           </div>
         </div>`;
@@ -651,6 +677,9 @@ async function renderHome() {
 
   app.querySelectorAll('[data-action="study"]').forEach(btn => {
     btn.addEventListener('click', () => startStudySession(parseInt(btn.dataset.id, 10)));
+  });
+  app.querySelectorAll('[data-action="browse"]').forEach(btn => {
+    btn.addEventListener('click', () => startBrowseSession(parseInt(btn.dataset.id, 10)));
   });
   app.querySelectorAll('[data-action="delete"]').forEach(btn => {
     btn.addEventListener('click', () => confirmDeleteDeck(parseInt(btn.dataset.id, 10)));
@@ -760,7 +789,7 @@ async function saveImportedDeck(name, parsedCards) {
   });
   const now = Date.now();
   const cards = parsedCards.map(c => ({
-    deckId, front: c.front, back: c.back,
+    deckId, front: c.front, back: c.back, css: c.css || '',
     ease: 2.5, interval: 0, reps: 0, lapses: 0,
     due: now, firstReviewDone: false, created: now
   }));
@@ -814,6 +843,23 @@ function shuffle(arr) {
   return a;
 }
 
+// Gemeinsames Karten-Markup für Lern- und Durchsehen-Ansicht.
+// Bindet die (auf den Wrapper beschränkte) Notiztyp-CSS ein, damit z.B.
+// Multiple-Choice-Layouts, Farben und Abstände wie im echten Anki aussehen.
+function flashcardMarkup(card) {
+  const scopedCss = scopeCss(card.css || '', 'anki-card-scope');
+  return `
+    <style>${scopedCss}</style>
+    <div class="side-label">Vorderseite</div>
+    <div id="card-front" class="anki-card-scope">${card.front}</div>
+    <div id="card-back-wrap" style="display:none">
+      <hr class="divider">
+      <div class="side-label">Rückseite</div>
+      <div id="card-back" class="anki-card-scope">${card.back}</div>
+    </div>
+  `;
+}
+
 function renderStudyView() {
   const s = currentSession;
   if (!s || s.queue.length === 0) {
@@ -836,15 +882,7 @@ function renderStudyView() {
         <div class="progress-count">${doneCount} / ${s.totalAtStart}</div>
       </div>
       <div class="card-area">
-        <div class="flashcard" id="flashcard">
-          <div class="side-label">Vorderseite</div>
-          <div id="card-front">${card.front}</div>
-          <div id="card-back-wrap" style="display:none">
-            <hr class="divider">
-            <div class="side-label">Rückseite</div>
-            <div id="card-back">${card.back}</div>
-          </div>
-        </div>
+        <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
       </div>
       <div class="tap-hint" id="tap-hint">Doppeltipp zum Umdrehen</div>
       <div class="answer-buttons" id="answer-buttons" style="display:none">
@@ -879,6 +917,7 @@ function renderStudyView() {
 }
 
 // Doppeltipp dreht die Karte um — erneuter Doppeltipp dreht sie zurück zur Vorderseite
+// (wird sowohl in der Lern- als auch in der Durchsehen-Ansicht verwendet)
 function toggleCardFace() {
   const backWrap = document.getElementById('card-back-wrap');
   const answerButtons = document.getElementById('answer-buttons');
@@ -887,12 +926,12 @@ function toggleCardFace() {
   const isRevealed = backWrap.style.display === 'block';
   if (isRevealed) {
     backWrap.style.display = 'none';
-    answerButtons.style.display = 'none';
-    tapHint.style.display = 'block';
+    if (answerButtons) answerButtons.style.display = 'none';
+    if (tapHint) tapHint.style.display = 'block';
   } else {
     backWrap.style.display = 'block';
-    answerButtons.style.display = 'grid';
-    tapHint.style.display = 'none';
+    if (answerButtons) answerButtons.style.display = 'grid';
+    if (tapHint) tapHint.style.display = 'none';
   }
   typesetMath();
 }
@@ -901,6 +940,72 @@ function typesetMath() {
   if (window.MathJax && window.MathJax.typesetPromise) {
     window.MathJax.typesetPromise([document.getElementById('flashcard')]).catch(() => {});
   }
+}
+
+/* ---------------------------------------------------------------------
+   Stapel durchsehen: alle Karten frei anschauen, unabhängig von SM-2
+   --------------------------------------------------------------------- */
+let browseSession = null;
+
+async function startBrowseSession(deckId) {
+  const deck = await Store.getDeck(deckId);
+  const cards = await Store.getCardsForDeck(deckId);
+  if (cards.length === 0) {
+    showToast('Dieser Stapel enthält keine Karten');
+    return;
+  }
+  browseSession = { deck, cards, index: 0 };
+  renderBrowseView();
+}
+
+function renderBrowseView() {
+  const b = browseSession;
+  if (!b) return;
+  const card = b.cards[b.index];
+  const pct = Math.round(((b.index + 1) / b.cards.length) * 100);
+
+  app.innerHTML = `
+    <header class="topbar">
+      <button class="back-btn" id="exit-browse">Fertig</button>
+      <h1 style="font-size:1.1rem">${escapeHtml(b.deck.name)}</h1>
+      <span style="width:60px"></span>
+    </header>
+    <main>
+      <div class="progress-wrap">
+        <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
+        <div class="progress-count">${b.index + 1} / ${b.cards.length}</div>
+      </div>
+      <div class="card-area">
+        <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
+      </div>
+      <div class="tap-hint" id="tap-hint">Doppeltipp zum Umdrehen</div>
+      <div class="browse-nav">
+        <button class="secondary" id="browse-prev" ${b.index === 0 ? 'disabled' : ''}>◀ Zurück</button>
+        <button class="secondary" id="browse-next" ${b.index === b.cards.length - 1 ? 'disabled' : ''}>Weiter ▶</button>
+      </div>
+    </main>
+  `;
+
+  document.getElementById('exit-browse').addEventListener('click', () => {
+    browseSession = null;
+    renderHome();
+  });
+  document.getElementById('browse-prev').addEventListener('click', () => {
+    if (browseSession.index > 0) { browseSession.index--; renderBrowseView(); }
+  });
+  document.getElementById('browse-next').addEventListener('click', () => {
+    if (browseSession.index < browseSession.cards.length - 1) { browseSession.index++; renderBrowseView(); }
+  });
+
+  const flashcard = document.getElementById('flashcard');
+  let lastTap = 0;
+  flashcard.addEventListener('click', () => {
+    const now = Date.now();
+    if (now - lastTap < 350) toggleCardFace();
+    lastTap = now;
+  });
+
+  typesetMath();
 }
 
 async function rateCard(q) {
