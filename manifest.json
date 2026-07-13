@@ -1,0 +1,19 @@
+{
+  "name": "Karteikarten",
+  "short_name": "Karteikarten",
+  "description": "Anki-Karteikarten lernen im Browser",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f7f5f2",
+  "theme_color": "#f7f5f2",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

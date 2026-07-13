@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Karteikarten</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f7f5f2">
+
+<!-- MathJax: Formeln in \( \), \[ \] und $$ $$ erkennen -->
+<script>
+window.MathJax = {
+  tex: {
+    inlineMath: [['\\(', '\\)']],
+    displayMath: [['\\[', '\\]'], ['$$', '$$']]
+  },
+  options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" id="MathJax-script" async></script>
+
+<!-- JSZip zum Entpacken der .apkg-Datei -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<!-- sql.js zum Lesen der SQLite-Datenbank (WebAssembly) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+
+<style>
+  :root {
+    --bg-a: #fbf7f0;
+    --bg-b: #f3ece1;
+    --card-bg: #ffffff;
+    --ink: #2c2a26;
+    --ink-soft: #7a7264;
+    --accent: #b08d5a;
+    --accent-soft: #e8dcc4;
+    --accent-dark: #6b5a3a;
+    --line: #ece3d3;
+    --again: #d1685a;
+    --hard: #dba24a;
+    --good: #5fa377;
+    --easy: #5089b3;
+    --radius: 20px;
+    --shadow-sm: 0 1px 2px rgba(107, 90, 58, .08), 0 1px 1px rgba(107, 90, 58, .04);
+    --shadow-md: 0 8px 24px rgba(107, 90, 58, .12), 0 2px 6px rgba(107, 90, 58, .08);
+    --shadow-lg: 0 16px 40px rgba(107, 90, 58, .16), 0 4px 12px rgba(107, 90, 58, .1);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: linear-gradient(160deg, var(--bg-a) 0%, var(--bg-b) 100%);
+    background-attachment: fixed;
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    overscroll-behavior: none;
+    -webkit-font-smoothing: antialiased;
+  }
+  #app { min-height: 100%; display: flex; flex-direction: column; }
+
+  header.topbar {
+    padding: 24px 24px 14px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  header.topbar h1 {
+    font-size: 1.6rem; margin: 0; font-weight: 800; letter-spacing: -.01em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  header.topbar h1 .logo-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--good));
+    display: inline-block;
+  }
+  header.topbar .back-btn {
+    background: rgba(255,255,255,.6); border: none; font-size: .95rem; color: var(--accent-dark);
+    padding: 10px 16px; cursor: pointer; font-weight: 600; border-radius: 12px;
+    transition: background .15s, transform .1s;
+  }
+  header.topbar .back-btn:active { background: rgba(255,255,255,.9); transform: scale(.97); }
+
+  main { flex: 1; padding: 0 20px 40px; max-width: 720px; margin: 0 auto; width: 100%; }
+
+  /* ---------- Startseite ---------- */
+  .import-zone {
+    border: 2px dashed var(--accent);
+    border-radius: var(--radius);
+    padding: 32px 24px;
+    text-align: center;
+    color: var(--ink-soft);
+    margin-bottom: 28px;
+    background: rgba(255,255,255,.35);
+    transition: background .15s, border-color .15s, transform .15s;
+  }
+  .import-zone .import-icon { font-size: 2rem; margin-bottom: 6px; }
+  .import-zone.dragover { background: rgba(255,255,255,.7); border-color: var(--accent-dark); transform: scale(1.01); }
+  .import-zone button.primary { margin-top: 14px; }
+
+  button {
+    font-family: inherit; font-size: 1rem; border-radius: 14px; border: none;
+    cursor: pointer; padding: 14px 20px; touch-action: manipulation;
+    transition: transform .1s ease, box-shadow .15s ease, background .15s ease;
+  }
+  button.primary {
+    background: linear-gradient(135deg, var(--accent-dark), #4a3e28);
+    color: #fff; font-weight: 600; box-shadow: var(--shadow-sm);
+  }
+  button.primary:active { transform: scale(.97); box-shadow: none; }
+  button.secondary { background: var(--line); color: var(--ink); }
+  button.secondary:active { background: #ddd2b8; transform: scale(.97); }
+  button:disabled { opacity: .45; cursor: default; }
+
+  .deck-list { display: flex; flex-direction: column; gap: 14px; }
+  .deck-card {
+    background: var(--card-bg); border-radius: var(--radius);
+    padding: 18px 20px; box-shadow: var(--shadow-sm);
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    transition: box-shadow .2s, transform .2s;
+  }
+  .deck-card:hover { box-shadow: var(--shadow-md); }
+  .deck-card .deck-icon {
+    flex-shrink: 0; width: 46px; height: 46px; border-radius: 14px;
+    background: linear-gradient(135deg, var(--accent-soft), #f6efdd);
+    display: flex; align-items: center; justify-content: center; font-size: 1.3rem;
+  }
+  .deck-card .deck-main { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
+  .deck-card .deck-info { flex: 1; min-width: 0; }
+  .deck-card .deck-name { font-weight: 700; font-size: 1.1rem; margin-bottom: 4px; word-break: break-word; }
+  .deck-card .deck-meta { color: var(--ink-soft); font-size: .88rem; }
+  .deck-card .deck-meta .due-badge {
+    display: inline-block; background: var(--accent-soft); color: var(--accent-dark);
+    border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .8rem; margin-right: 6px;
+  }
+  .deck-stats { margin-top: 8px; }
+  .stat-bar-track {
+    background: var(--line); height: 5px; border-radius: 4px; overflow: hidden;
+  }
+  .stat-bar-fill {
+    background: linear-gradient(90deg, var(--accent), var(--good));
+    height: 100%; transition: width .3s ease;
+  }
+  .deck-stats-text { color: var(--ink-soft); font-size: .78rem; margin-top: 5px; }
+  .deck-card .deck-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  .deck-card .delete-btn {
+    background: none; color: var(--again); font-size: .85rem; padding: 10px;
+  }
+  .empty-hint { color: var(--ink-soft); text-align: center; padding: 48px 20px; font-size: 1rem; }
+  .empty-hint .empty-icon { font-size: 2.4rem; display: block; margin-bottom: 10px; }
+
+  /* ---------- Lern-Ansicht ---------- */
+  .progress-wrap { padding: 4px 0 20px; }
+  .progress-bar-track {
+    background: rgba(255,255,255,.6); height: 8px; border-radius: 6px; overflow: hidden;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.05);
+  }
+  .progress-bar-fill {
+    background: linear-gradient(90deg, var(--accent), var(--good));
+    height: 100%; width: 0%; transition: width .3s ease;
+  }
+  .progress-count { text-align: center; color: var(--ink-soft); font-size: .88rem; margin-top: 8px; font-weight: 600; }
+
+  .card-area {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 48vh; perspective: 1200px;
+  }
+  .flashcard {
+    background: var(--card-bg); border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    width: 100%; min-height: 300px; padding: 36px 26px;
+    display: flex; flex-direction: column; justify-content: center;
+    touch-action: manipulation; user-select: none;
+    font-size: 1.25rem; line-height: 1.55; text-align: center;
+    cursor: pointer;
+    animation: card-in .25s ease;
+  }
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(6px) scale(.98); }
+    to { opacity: 1; transform: none; }
+  }
+  .flashcard .side-label {
+    font-size: .75rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--accent); margin-bottom: 14px; font-weight: 700;
+  }
+  .flashcard .divider { border: none; border-top: 1px solid var(--line); margin: 22px 0; }
+  .flashcard img { max-width: 100%; height: auto; border-radius: 10px; }
+  .cloze-answer { color: var(--good); font-weight: 700; }
+  #card-back-wrap { animation: reveal-in .3s ease; }
+  @keyframes reveal-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: none; }
+  }
+  .tap-hint { text-align: center; color: var(--ink-soft); font-size: .85rem; margin-top: 16px; }
+
+  .answer-buttons {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    margin-top: 20px;
+  }
+  .answer-buttons button {
+    padding: 16px 6px; font-weight: 700; color: #fff; font-size: .95rem;
+    box-shadow: var(--shadow-sm);
+  }
+  .answer-buttons button:active { transform: scale(.96); }
+  .answer-buttons .btn-again { background: linear-gradient(135deg, var(--again), #b8523f); }
+  .answer-buttons .btn-hard { background: linear-gradient(135deg, var(--hard), #c98a2e); }
+  .answer-buttons .btn-good { background: linear-gradient(135deg, var(--good), #468a63); }
+  .answer-buttons .btn-easy { background: linear-gradient(135deg, var(--easy), #3a749f); }
+  .answer-buttons button .sub { display: block; font-size: .72rem; font-weight: 400; opacity: .85; margin-top: 2px; }
+
+  .session-summary {
+    background: var(--card-bg); border-radius: var(--radius); padding: 40px 24px;
+    text-align: center; box-shadow: var(--shadow-md);
+    animation: card-in .3s ease;
+  }
+  .session-summary .emoji-big { font-size: 2.6rem; }
+  .session-summary h2 { margin-top: 8px; }
+  .session-summary .stat-row { display: flex; justify-content: center; gap: 32px; margin: 24px 0; }
+  .session-summary .stat { display: flex; flex-direction: column; }
+  .session-summary .stat .num { font-size: 2rem; font-weight: 800; color: var(--accent-dark); }
+  .session-summary .stat .label { color: var(--ink-soft); font-size: .85rem; }
+
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(44,42,38,.45);
+    display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 50;
+    backdrop-filter: blur(2px);
+  }
+  .modal-box {
+    background: #fff; border-radius: var(--radius); padding: 26px; max-width: 400px; width: 100%;
+    box-shadow: var(--shadow-lg);
+    animation: card-in .2s ease;
+  }
+  .modal-box h3 { margin-top: 0; }
+  .modal-box .modal-actions { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; }
+
+  .toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    background: var(--accent-dark); color: #fff; padding: 13px 22px; border-radius: 14px;
+    font-size: .9rem; max-width: 90%; text-align: center; z-index: 60;
+    box-shadow: var(--shadow-md);
+    animation: toast-in .2s ease;
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translate(-50%, 8px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+  }
+
+  #file-input { display: none; }
+
+  @media (min-width: 600px) {
+    .flashcard { font-size: 1.4rem; }
+  }
+  @media (max-width: 480px) {
+    .deck-card { flex-direction: column; align-items: stretch; }
+    .deck-card .deck-actions { justify-content: flex-end; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast-container"></div>
+
+<script>
+/* ======================================================================
+   Karteikarten-App — Anki-.apkg-Reader mit SM-2-Wiederholungsalgorithmus
+   Reines HTML/CSS/JS, keine Build-Schritte, keine Server-Komponente.
+   ====================================================================== */
+
+/* ---------------------------------------------------------------------
+   IndexedDB-Zugriffsschicht
+   Object Stores:
+     decks: { id, name, importDate, newPerDay, newIntroducedToday, newIntroducedDate }
+     cards: { id, deckId, front, back, ease, interval, reps, due, lapses, firstReviewDone, created }
+   --------------------------------------------------------------------- */
+const DB_NAME = 'karteikartenDB';
+const DB_VERSION = 1;
+let dbPromise = null;
+
+function openDB() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('decks')) {
+        db.createObjectStore('decks', { keyPath: 'id', autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains('cards')) {
+        const store = db.createObjectStore('cards', { keyPath: 'id', autoIncrement: true });
+        store.createIndex('deckId', 'deckId', { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+function tx(storeNames, mode) {
+  return openDB().then(db => db.transaction(storeNames, mode));
+}
+
+function reqToPromise(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+const Store = {
+  async addDeck(deck) {
+    const t = await tx(['decks'], 'readwrite');
+    const id = await reqToPromise(t.objectStore('decks').add(deck));
+    return id;
+  },
+  async updateDeck(deck) {
+    const t = await tx(['decks'], 'readwrite');
+    await reqToPromise(t.objectStore('decks').put(deck));
+  },
+  async getDeck(id) {
+    const t = await tx(['decks'], 'readonly');
+    return reqToPromise(t.objectStore('decks').get(id));
+  },
+  async getAllDecks() {
+    const t = await tx(['decks'], 'readonly');
+    return reqToPromise(t.objectStore('decks').getAll());
+  },
+  async deleteDeck(id) {
+    const t = await tx(['decks', 'cards'], 'readwrite');
+    t.objectStore('decks').delete(id);
+    const idx = t.objectStore('cards').index('deckId');
+    const cursorReq = idx.openCursor(IDBKeyRange.only(id));
+    await new Promise((resolve, reject) => {
+      cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) { cursor.delete(); cursor.continue(); }
+        else resolve();
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+    });
+  },
+  async findDeckByName(name) {
+    const decks = await this.getAllDecks();
+    return decks.find(d => d.name === name);
+  },
+  async addCards(cards) {
+    const t = await tx(['cards'], 'readwrite');
+    const store = t.objectStore('cards');
+    for (const c of cards) store.add(c);
+    await new Promise((resolve, reject) => {
+      t.oncomplete = resolve;
+      t.onerror = () => reject(t.error);
+    });
+  },
+  async getCardsForDeck(deckId) {
+    const t = await tx(['cards'], 'readonly');
+    const idx = t.objectStore('cards').index('deckId');
+    return reqToPromise(idx.getAll(IDBKeyRange.only(deckId)));
+  },
+  async updateCard(card) {
+    const t = await tx(['cards'], 'readwrite');
+    await reqToPromise(t.objectStore('cards').put(card));
+  }
+};
+
+/* ---------------------------------------------------------------------
+   .apkg-Import: ZIP entpacken, SQLite lesen, Notiztypen anwenden
+   --------------------------------------------------------------------- */
+let SQL = null;
+async function getSQL() {
+  if (SQL) return SQL;
+  SQL = await initSqlJs({
+    locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
+  });
+  return SQL;
+}
+
+async function parseApkg(file) {
+  const zip = await JSZip.loadAsync(file);
+
+  let dbFile = zip.file('collection.anki21') || zip.file('collection.anki2');
+  if (!dbFile) {
+    if (zip.file('collection.anki21b')) {
+      throw new Error('Diese Datei nutzt ein neueres Anki-Format, das noch nicht unterstützt wird');
+    }
+    throw new Error('Keine gültige Anki-Sammlung in dieser Datei gefunden');
+  }
+
+  const dbBytes = await dbFile.async('uint8array');
+  const sql = await getSQL();
+  const db = new sql.Database(dbBytes);
+
+  // Medien-Zuordnung (Nummer -> Dateiname) laden, falls vorhanden
+  let mediaMap = {};
+  const mediaFile = zip.file('media');
+  if (mediaFile) {
+    try {
+      mediaMap = JSON.parse(await mediaFile.async('text'));
+    } catch (e) { mediaMap = {}; }
+  }
+  // Object-URLs für Mediendateien vorbereiten (Nummer -> blob-URL)
+  const mediaUrls = {};
+  for (const [num, filename] of Object.entries(mediaMap)) {
+    const entry = zip.file(num);
+    if (entry) {
+      try {
+        const blob = await entry.async('blob');
+        mediaUrls[filename] = URL.createObjectURL(blob);
+      } catch (e) { /* Mediendatei defekt/fehlt: ignorieren */ }
+    }
+  }
+
+  const colRes = db.exec('SELECT models FROM col LIMIT 1');
+  if (!colRes.length) throw new Error('Keine Modell-Informationen in der Datenbank gefunden');
+  const modelsJson = colRes[0].values[0][0];
+  const models = JSON.parse(modelsJson);
+
+  const notesRes = db.exec('SELECT id, mid, flds FROM notes');
+  const notesById = {};
+  if (notesRes.length) {
+    for (const row of notesRes[0].values) {
+      notesById[row[0]] = { mid: row[1], flds: row[2] };
+    }
+  }
+
+  const cardsRes = db.exec('SELECT id, nid, ord FROM cards');
+  const cardRows = cardsRes.length ? cardsRes[0].values : [];
+
+  const parsedCards = [];
+  for (const [cardId, nid, ord] of cardRows) {
+    const note = notesById[nid];
+    if (!note) continue;
+    const model = models[note.mid];
+    if (!model) continue;
+
+    const fieldNames = model.flds.map(f => f.name);
+    const fieldValues = note.flds.split('\x1f');
+    const fieldsMap = {};
+    fieldNames.forEach((name, i) => { fieldsMap[name] = fieldValues[i] || ''; });
+
+    const isClozeModel = model.type === 1;
+    const tmpl = isClozeModel ? model.tmpls[0] : model.tmpls[ord];
+    if (!tmpl) continue;
+
+    let frontHtml = renderTemplate(tmpl.qfmt, fieldsMap, ord, true, '');
+    let backHtml = renderTemplate(tmpl.afmt, fieldsMap, ord, false, frontHtml);
+
+    frontHtml = insertMedia(frontHtml, mediaUrls);
+    backHtml = insertMedia(backHtml, mediaUrls);
+
+    parsedCards.push({ front: frontHtml, back: backHtml });
+  }
+
+  db.close();
+  return parsedCards;
+}
+
+function insertMedia(html, mediaUrls) {
+  return html.replace(/src="([^"]+)"/g, (match, src) => {
+    if (mediaUrls[src]) return `src="${mediaUrls[src]}"`;
+    return match; // Bild fehlt: Original-Pfad belassen, kein Absturz
+  });
+}
+
+/* ---------------------------------------------------------------------
+   Template-Rendering (Ankis {{Feld}}, {{#Feld}}, {{^Feld}}, {{cloze:Feld}})
+   --------------------------------------------------------------------- */
+function renderTemplate(tmplStr, fieldsMap, ord, isFront, frontSideHtml) {
+  let out = tmplStr || '';
+
+  // {{FrontSide}} nur auf der Rückseite relevant
+  out = out.replace(/\{\{FrontSide\}\}/g, frontSideHtml || '');
+
+  // Bedingte Abschnitte: {{#Feld}}...{{/Feld}} (nur wenn Feld nicht leer)
+  let changed = true;
+  let guard = 0;
+  while (changed && guard < 20) {
+    changed = false;
+    guard++;
+    out = out.replace(/\{\{#([^}#^\/]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (m, field, inner) => {
+      changed = true;
+      const val = (fieldsMap[field.trim()] || '').trim();
+      return val ? inner : '';
+    });
+    out = out.replace(/\{\{\^([^}#^\/]+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (m, field, inner) => {
+      changed = true;
+      const val = (fieldsMap[field.trim()] || '').trim();
+      return val ? '' : inner;
+    });
+  }
+
+  // Cloze-Platzhalter: {{cloze:Feld}}
+  out = out.replace(/\{\{cloze:([^}]+)\}\}/g, (m, field) => {
+    const text = fieldsMap[field.trim()] || '';
+    return renderCloze(text, ord, isFront);
+  });
+
+  // Normale Feld-Platzhalter (inkl. Filter wie {{type:Feld}}, Filter wird ignoriert)
+  out = out.replace(/\{\{([^#\^\/][^}]*)\}\}/g, (m, expr) => {
+    const parts = expr.split(':');
+    const field = parts[parts.length - 1].trim();
+    return fieldsMap[field] !== undefined ? fieldsMap[field] : '';
+  });
+
+  return out;
+}
+
+function renderCloze(text, ord, isFront) {
+  const targetNum = ord + 1;
+  return text.replace(/\{\{c(\d+)::([\s\S]*?)(?:::([\s\S]*?))?\}\}/g, (m, numStr, content, hint) => {
+    const num = parseInt(numStr, 10);
+    if (num === targetNum) {
+      if (isFront) return hint ? `[${hint}]` : '[...]';
+      return `<span class="cloze-answer">${content}</span>`;
+    }
+    return content;
+  });
+}
+
+/* ---------------------------------------------------------------------
+   SM-2 Wiederholungsalgorithmus
+   --------------------------------------------------------------------- */
+function applySM2(card, q) {
+  const oneDay = 24 * 60 * 60 * 1000;
+  if (q === 1) {
+    // Nochmal
+    card.reps = 0;
+    card.lapses += 1;
+    card.ease = Math.max(1.3, card.ease - 0.20);
+    card.interval = card.interval; // bleibt klein, Karte kommt in Sitzung wieder
+    card.due = Date.now(); // heute wieder fällig
+    return { requeue: true };
+  }
+
+  if (q === 3) {
+    // Schwer
+    card.ease = Math.max(1.3, card.ease - 0.15);
+    card.interval = Math.max(1, card.interval * 1.2);
+    card.reps += 1;
+    card.due = Date.now() + card.interval * oneDay;
+    return { requeue: false };
+  }
+
+  // q === 4 (Gut) oder q === 5 (Leicht): normaler SM-2-Schritt
+  let interval;
+  if (card.reps === 0) interval = 1;
+  else if (card.reps === 1) interval = 6;
+  else interval = Math.round(card.interval * card.ease);
+
+  card.reps += 1;
+  card.ease = card.ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
+  if (card.ease < 1.3) card.ease = 1.3;
+
+  if (q === 5) {
+    // Leicht: Ease bereits oben passend erhöht (q=5 => +0.15), Intervall zusätzlich x1.3
+    interval = interval * 1.3;
+  }
+  card.interval = interval;
+  card.due = Date.now() + interval * oneDay;
+  return { requeue: false };
+}
+
+function newCardState() {
+  return { ease: 2.5, interval: 0, reps: 0, lapses: 0, due: Date.now(), firstReviewDone: false };
+}
+
+// Fortschritts-Kennzahlen pro Stapel für die Startseite
+function computeDeckStats(cards, deck) {
+  const total = cards.length;
+  const learned = cards.filter(c => c.firstReviewDone).length;
+  const mature = cards.filter(c => c.interval >= 21).length; // "reif" wie in Anki üblich
+  const newCount = total - learned;
+  const progressPct = total > 0 ? Math.round((learned / total) * 100) : 0;
+  const daysLeft = newCount > 0 ? Math.ceil(newCount / (deck.newPerDay || 20)) : 0;
+  return { total, learned, mature, newCount, progressPct, daysLeft };
+}
+
+/* ---------------------------------------------------------------------
+   UI: Router / Views
+   --------------------------------------------------------------------- */
+const app = document.getElementById('app');
+let currentSession = null; // aktive Lern-Sitzung
+
+function showToast(msg) {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3200);
+}
+
+async function renderHome() {
+  currentSession = null;
+  const decks = await Store.getAllDecks();
+  const today = Date.now();
+
+  let deckItemsHtml = '';
+  if (decks.length === 0) {
+    deckItemsHtml = `<div class="empty-hint"><span class="empty-icon">🗂️</span>Noch keine Stapel importiert.<br>Lade eine .apkg-Datei hoch, um loszulegen.</div>`;
+  } else {
+    for (const deck of decks) {
+      const cards = await Store.getCardsForDeck(deck.id);
+      const dueCount = cards.filter(c => c.due <= today).length;
+      const stats = computeDeckStats(cards, deck);
+      deckItemsHtml += `
+        <div class="deck-card">
+          <div class="deck-main">
+            <div class="deck-icon">📚</div>
+            <div class="deck-info">
+              <div class="deck-name">${escapeHtml(deck.name)}</div>
+              <div class="deck-meta"><span class="due-badge">${dueCount}</span>von ${cards.length} Karten heute fällig</div>
+              <div class="deck-stats">
+                <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${stats.progressPct}%"></div></div>
+                <div class="deck-stats-text">${stats.progressPct}% gelernt · ${stats.mature} reif${stats.daysLeft > 0 ? ` · noch ca. ${stats.daysLeft} Tag${stats.daysLeft === 1 ? '' : 'e'} bis alle neuen Karten dran waren` : ''}</div>
+              </div>
+            </div>
+          </div>
+          <div class="deck-actions">
+            <button class="primary" data-action="study" data-id="${deck.id}" ${cards.length === 0 ? 'disabled' : ''}>Lernen starten</button>
+            <button class="delete-btn" data-action="delete" data-id="${deck.id}">Löschen</button>
+          </div>
+        </div>`;
+    }
+  }
+
+  app.innerHTML = `
+    <header class="topbar"><h1><span class="logo-dot"></span>Karteikarten</h1></header>
+    <main>
+      <div class="import-zone" id="dropzone">
+        <div class="import-icon">📁</div>
+        <div>.apkg-Datei hierher ziehen</div>
+        <button class="primary" id="import-btn">Datei auswählen</button>
+        <input type="file" id="file-input" accept=".apkg">
+      </div>
+      <div class="deck-list">${deckItemsHtml}</div>
+    </main>
+  `;
+
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('file-input');
+  document.getElementById('import-btn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length) handleImport(e.target.files[0]);
+  });
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleImport(e.dataTransfer.files[0]);
+  });
+
+  app.querySelectorAll('[data-action="study"]').forEach(btn => {
+    btn.addEventListener('click', () => startStudySession(parseInt(btn.dataset.id, 10)));
+  });
+  app.querySelectorAll('[data-action="delete"]').forEach(btn => {
+    btn.addEventListener('click', () => confirmDeleteDeck(parseInt(btn.dataset.id, 10)));
+  });
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+async function confirmDeleteDeck(deckId) {
+  const deck = await Store.getDeck(deckId);
+  showModal({
+    title: 'Stapel löschen?',
+    body: `Möchtest du "${escapeHtml(deck.name)}" wirklich löschen? Der gesamte Lernfortschritt geht verloren.`,
+    actions: [
+      { label: 'Abbrechen', class: 'secondary' },
+      { label: 'Löschen', class: 'primary', danger: true, onClick: async () => {
+          await Store.deleteDeck(deckId);
+          closeModal();
+          renderHome();
+        } }
+    ]
+  });
+}
+
+let modalRoot = null;
+function showModal({ title, body, actions }) {
+  closeModal();
+  modalRoot = document.createElement('div');
+  modalRoot.className = 'modal-overlay';
+  modalRoot.innerHTML = `
+    <div class="modal-box">
+      <h3>${title}</h3>
+      <div>${body}</div>
+      <div class="modal-actions"></div>
+    </div>`;
+  const actionsWrap = modalRoot.querySelector('.modal-actions');
+  actions.forEach(a => {
+    const btn = document.createElement('button');
+    btn.className = a.class || 'secondary';
+    btn.textContent = a.label;
+    btn.addEventListener('click', () => {
+      if (a.onClick) a.onClick(); else closeModal();
+    });
+    actionsWrap.appendChild(btn);
+  });
+  document.body.appendChild(modalRoot);
+}
+function closeModal() {
+  if (modalRoot) { modalRoot.remove(); modalRoot = null; }
+}
+
+/* ---------------------------------------------------------------------
+   Import-Ablauf
+   --------------------------------------------------------------------- */
+async function handleImport(file) {
+  if (!file.name.toLowerCase().endsWith('.apkg')) {
+    showToast('Bitte eine .apkg-Datei auswählen');
+    return;
+  }
+  showToast('Importiere „' + file.name + '“ …');
+  const deckName = file.name.replace(/\.apkg$/i, '');
+
+  let parsedCards;
+  try {
+    parsedCards = await parseApkg(file);
+  } catch (err) {
+    showToast('Fehler beim Import: ' + err.message);
+    return;
+  }
+
+  if (parsedCards.length === 0) {
+    showToast('Keine Karten in dieser Datei gefunden');
+    return;
+  }
+
+  const existing = await Store.findDeckByName(deckName);
+  if (existing) {
+    showModal({
+      title: 'Stapel existiert bereits',
+      body: `Ein Stapel namens "${escapeHtml(deckName)}" existiert schon. Möchtest du ihn überschreiben oder als neuen Stapel anlegen?`,
+      actions: [
+        { label: 'Abbrechen', class: 'secondary' },
+        { label: 'Als neu anlegen', class: 'secondary', onClick: async () => {
+            closeModal();
+            await saveImportedDeck(deckName + ' (neu)', parsedCards);
+          } },
+        { label: 'Überschreiben', class: 'primary', onClick: async () => {
+            closeModal();
+            await Store.deleteDeck(existing.id);
+            await saveImportedDeck(deckName, parsedCards);
+          } }
+      ]
+    });
+  } else {
+    await saveImportedDeck(deckName, parsedCards);
+  }
+}
+
+async function saveImportedDeck(name, parsedCards) {
+  const deckId = await Store.addDeck({
+    name, importDate: Date.now(), newPerDay: 20,
+    newIntroducedToday: 0, newIntroducedDate: null
+  });
+  const now = Date.now();
+  const cards = parsedCards.map(c => ({
+    deckId, front: c.front, back: c.back,
+    ease: 2.5, interval: 0, reps: 0, lapses: 0,
+    due: now, firstReviewDone: false, created: now
+  }));
+  await Store.addCards(cards);
+  showToast(`„${name}“ importiert: ${cards.length} Karten`);
+  renderHome();
+}
+
+/* ---------------------------------------------------------------------
+   Lern-Sitzung
+   --------------------------------------------------------------------- */
+async function startStudySession(deckId) {
+  const deck = await Store.getDeck(deckId);
+  const allCards = await Store.getCardsForDeck(deckId);
+  const today = Date.now();
+  const todayStr = new Date().toDateString();
+
+  if (deck.newIntroducedDate !== todayStr) {
+    deck.newIntroducedDate = todayStr;
+    deck.newIntroducedToday = 0;
+    await Store.updateDeck(deck);
+  }
+
+  const dueCards = allCards.filter(c => c.firstReviewDone && c.due <= today);
+  const newCards = allCards.filter(c => !c.firstReviewDone);
+  const allowedNew = Math.max(0, (deck.newPerDay || 20) - deck.newIntroducedToday);
+  const newCardsToTake = newCards.slice(0, allowedNew);
+
+  const queue = shuffle(dueCards).concat(newCardsToTake);
+
+  if (queue.length === 0) {
+    showToast('Keine Karten fällig — gut gemacht!');
+    return;
+  }
+
+  currentSession = {
+    deck, queue, totalAtStart: queue.length,
+    studiedIds: new Set(), againCount: 0, goodOrBetterCount: 0,
+    revealed: false
+  };
+
+  renderStudyView();
+}
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function renderStudyView() {
+  const s = currentSession;
+  if (!s || s.queue.length === 0) {
+    renderSessionSummary();
+    return;
+  }
+  const card = s.queue[0];
+  const doneCount = s.studiedIds.size;
+  const progressPct = Math.min(100, Math.round((doneCount / s.totalAtStart) * 100));
+
+  app.innerHTML = `
+    <header class="topbar">
+      <button class="back-btn" id="exit-session">Beenden</button>
+      <h1 style="font-size:1.1rem">${escapeHtml(s.deck.name)}</h1>
+      <span style="width:60px"></span>
+    </header>
+    <main>
+      <div class="progress-wrap">
+        <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${progressPct}%"></div></div>
+        <div class="progress-count">${doneCount} / ${s.totalAtStart}</div>
+      </div>
+      <div class="card-area">
+        <div class="flashcard" id="flashcard">
+          <div class="side-label">Vorderseite</div>
+          <div id="card-front">${card.front}</div>
+          <div id="card-back-wrap" style="display:none">
+            <hr class="divider">
+            <div class="side-label">Rückseite</div>
+            <div id="card-back">${card.back}</div>
+          </div>
+        </div>
+      </div>
+      <div class="tap-hint" id="tap-hint">Doppeltipp zum Umdrehen</div>
+      <div class="answer-buttons" id="answer-buttons" style="display:none">
+        <button class="btn-again" data-q="1">Nochmal</button>
+        <button class="btn-hard" data-q="3">Schwer</button>
+        <button class="btn-good" data-q="4">Gut</button>
+        <button class="btn-easy" data-q="5">Leicht</button>
+      </div>
+    </main>
+  `;
+
+  document.getElementById('exit-session').addEventListener('click', () => {
+    currentSession = null;
+    renderHome();
+  });
+
+  const flashcard = document.getElementById('flashcard');
+  let lastTap = 0;
+  flashcard.addEventListener('click', () => {
+    const now = Date.now();
+    if (now - lastTap < 350) {
+      toggleCardFace();
+    }
+    lastTap = now;
+  });
+
+  document.querySelectorAll('#answer-buttons button').forEach(btn => {
+    btn.addEventListener('click', () => rateCard(parseInt(btn.dataset.q, 10)));
+  });
+
+  typesetMath();
+}
+
+// Doppeltipp dreht die Karte um — erneuter Doppeltipp dreht sie zurück zur Vorderseite
+function toggleCardFace() {
+  const backWrap = document.getElementById('card-back-wrap');
+  const answerButtons = document.getElementById('answer-buttons');
+  const tapHint = document.getElementById('tap-hint');
+  if (!backWrap) return;
+  const isRevealed = backWrap.style.display === 'block';
+  if (isRevealed) {
+    backWrap.style.display = 'none';
+    answerButtons.style.display = 'none';
+    tapHint.style.display = 'block';
+  } else {
+    backWrap.style.display = 'block';
+    answerButtons.style.display = 'grid';
+    tapHint.style.display = 'none';
+  }
+  typesetMath();
+}
+
+function typesetMath() {
+  if (window.MathJax && window.MathJax.typesetPromise) {
+    window.MathJax.typesetPromise([document.getElementById('flashcard')]).catch(() => {});
+  }
+}
+
+async function rateCard(q) {
+  const s = currentSession;
+  if (!s) return;
+  const card = s.queue[0];
+
+  const wasNew = !card.firstReviewDone;
+  card.firstReviewDone = true;
+
+  const result = applySM2(card, q);
+  await Store.updateCard(card);
+
+  if (wasNew) {
+    s.deck.newIntroducedToday += 1;
+    await Store.updateDeck(s.deck);
+  }
+
+  s.studiedIds.add(card.id);
+  if (q === 1) s.againCount += 1; else s.goodOrBetterCount += 1;
+
+  s.queue.shift();
+  if (result.requeue) {
+    s.queue.push(card);
+  }
+
+  renderStudyView();
+}
+
+function renderSessionSummary() {
+  const s = currentSession;
+  app.innerHTML = `
+    <header class="topbar"><h1>Sitzung beendet</h1></header>
+    <main>
+      <div class="session-summary">
+        <div class="emoji-big">🎉</div>
+        <h2>Gut gemacht!</h2>
+        <div class="stat-row">
+          <div class="stat"><span class="num">${s.studiedIds.size}</span><span class="label">Karten gelernt</span></div>
+          <div class="stat"><span class="num">${s.againCount}</span><span class="label">Nochmal</span></div>
+        </div>
+        <button class="primary" id="back-home">Zurück zur Übersicht</button>
+      </div>
+    </main>
+  `;
+  document.getElementById('back-home').addEventListener('click', () => renderHome());
+  currentSession = null;
+}
+
+/* ---------------------------------------------------------------------
+   Start
+   --------------------------------------------------------------------- */
+renderHome();
+</script>
+</body>
+</html>
