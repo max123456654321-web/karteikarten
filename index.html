@@ -140,7 +140,7 @@ window.MathJax = {
     height: 100%; transition: width .3s ease;
   }
   .deck-stats-text { color: var(--ink-soft); font-size: .78rem; margin-top: 5px; }
-  .deck-card .deck-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  .deck-card .deck-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
   .deck-card .delete-btn {
     background: none; color: var(--again); font-size: .85rem; padding: 10px;
   }
@@ -181,7 +181,6 @@ window.MathJax = {
     font-size: .75rem; text-transform: uppercase; letter-spacing: .08em;
     color: var(--accent); margin-bottom: 14px; font-weight: 700;
   }
-  .flashcard .divider { border: none; border-top: 1px solid var(--line); margin: 22px 0; }
   .flashcard img { max-width: 100%; height: auto; border-radius: 10px; }
   .cloze-answer { color: var(--good); font-weight: 700; }
   .anki-card-scope { display: block; }
@@ -229,6 +228,47 @@ window.MathJax = {
 
   .browse-nav { display: flex; gap: 10px; margin-top: 20px; }
   .browse-nav button { flex: 1; }
+
+  .fav-row { display: flex; justify-content: center; margin: -6px 0 10px; }
+  .fav-btn { background: none; border: none; color: var(--accent-dark); font-size: .95rem; font-weight: 600; padding: 6px 10px; cursor: pointer; }
+
+  .browse-mode-switch { display: flex; gap: 4px; }
+  .mode-btn { background: rgba(255,255,255,.6); border: none; border-radius: 10px; padding: 8px 10px; font-size: .95rem; cursor: pointer; }
+  .mode-btn.active { background: var(--accent-soft); }
+
+  .card-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px; margin-top: 10px;
+  }
+  .card-tile {
+    position: relative; background: var(--card-bg); border-radius: 14px;
+    box-shadow: var(--shadow-sm); padding: 10px; cursor: pointer;
+    display: flex; flex-direction: column; gap: 8px; min-height: 120px;
+    transition: box-shadow .15s, transform .1s;
+  }
+  .card-tile:active { transform: scale(.97); }
+  .card-tile-img {
+    width: 100%; height: 70px; border-radius: 10px; background-size: cover;
+    background-position: center; background-color: var(--bg-a);
+  }
+  .card-tile-text {
+    font-size: .82rem; line-height: 1.35; color: var(--ink);
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+  }
+  .tile-fav-btn {
+    position: absolute; top: 6px; right: 6px; background: none; border: none;
+    padding: 2px; font-size: 1rem; line-height: 1; cursor: pointer; z-index: 1;
+  }
+
+  .card-simplelist { display: flex; flex-direction: column; margin-top: 10px; }
+  .card-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 6px; border-bottom: 1px solid var(--line);
+    font-size: .85rem; cursor: pointer;
+  }
+  .card-row:active { background: rgba(255,255,255,.5); }
+  .card-row-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .row-fav-btn { background: none; border: none; padding: 2px; font-size: 1rem; line-height: 1; cursor: pointer; flex-shrink: 0; }
 
   .session-summary {
     background: var(--card-bg); border-radius: var(--radius); padding: 40px 24px;
@@ -668,6 +708,7 @@ async function renderHome() {
     for (const deck of decks) {
       const cards = await Store.getCardsForDeck(deck.id);
       const dueCount = cards.filter(c => c.due <= today).length;
+      const favCount = cards.filter(c => c.favorite).length;
       const stats = computeDeckStats(cards, deck);
       deckItemsHtml += `
         <div class="deck-card">
@@ -685,6 +726,7 @@ async function renderHome() {
           <div class="deck-actions">
             <button class="primary" data-action="study" data-id="${deck.id}" ${cards.length === 0 ? 'disabled' : ''}>Lernen starten</button>
             <button class="secondary" data-action="browse" data-id="${deck.id}" ${cards.length === 0 ? 'disabled' : ''}>Durchsehen</button>
+            <button class="secondary" data-action="study-fav" data-id="${deck.id}" ${favCount === 0 ? 'disabled' : ''}>⭐ Favoriten (${favCount})</button>
             <button class="delete-btn" data-action="delete" data-id="${deck.id}">Löschen</button>
           </div>
         </div>`;
@@ -723,6 +765,9 @@ async function renderHome() {
   });
   app.querySelectorAll('[data-action="browse"]').forEach(btn => {
     btn.addEventListener('click', () => startBrowseSession(parseInt(btn.dataset.id, 10)));
+  });
+  app.querySelectorAll('[data-action="study-fav"]').forEach(btn => {
+    btn.addEventListener('click', () => startStudySession(parseInt(btn.dataset.id, 10), { favoritesOnly: true }));
   });
   app.querySelectorAll('[data-action="delete"]').forEach(btn => {
     btn.addEventListener('click', () => confirmDeleteDeck(parseInt(btn.dataset.id, 10)));
@@ -833,7 +878,7 @@ async function saveImportedDeck(name, parsedCards) {
   const now = Date.now();
   const cards = parsedCards.map(c => ({
     deckId, front: c.front, back: c.back, css: c.css || '', mcData: c.mcData || null,
-    ease: 2.5, interval: 0, reps: 0, lapses: 0,
+    ease: 2.5, interval: 0, reps: 0, lapses: 0, favorite: false,
     due: now, firstReviewDone: false, created: now
   }));
   await Store.addCards(cards);
@@ -844,9 +889,21 @@ async function saveImportedDeck(name, parsedCards) {
 /* ---------------------------------------------------------------------
    Lern-Sitzung
    --------------------------------------------------------------------- */
-async function startStudySession(deckId) {
+// opts.favoritesOnly: nur favorisierte Karten dieses Stapels lernen.
+// Neue Karten werden in Chargen von deck.newPerDay eingeführt, aber die
+// Sitzung stoppt NIE deswegen — läuft die Warteschlange leer und es gibt noch
+// unbearbeitete Karten im Pool, wird automatisch die nächste Charge nachgezogen
+// (siehe renderStudyView). Man kann also beliebig lange weiterlernen.
+async function startStudySession(deckId, opts = {}) {
   const deck = await Store.getDeck(deckId);
-  const allCards = await Store.getCardsForDeck(deckId);
+  let allCards = await Store.getCardsForDeck(deckId);
+  if (opts.favoritesOnly) {
+    allCards = allCards.filter(c => c.favorite);
+    if (allCards.length === 0) {
+      showToast('Keine Favoriten in diesem Stapel');
+      return;
+    }
+  }
   const today = Date.now();
   const todayStr = new Date().toDateString();
 
@@ -857,19 +914,20 @@ async function startStudySession(deckId) {
   }
 
   const dueCards = allCards.filter(c => c.firstReviewDone && c.due <= today);
-  const newCards = allCards.filter(c => !c.firstReviewDone);
-  const allowedNew = Math.max(0, (deck.newPerDay || 20) - deck.newIntroducedToday);
-  const newCardsToTake = newCards.slice(0, allowedNew);
+  const newCardsPool = allCards.filter(c => !c.firstReviewDone);
+  const batchSize = deck.newPerDay || 20;
+  const firstBatch = newCardsPool.splice(0, batchSize);
 
-  const queue = shuffle(dueCards).concat(newCardsToTake);
+  const queue = shuffle(dueCards).concat(firstBatch);
 
-  if (queue.length === 0) {
+  if (queue.length === 0 && newCardsPool.length === 0) {
     showToast('Keine Karten fällig — gut gemacht!');
     return;
   }
 
   currentSession = {
-    deck, queue, totalAtStart: queue.length,
+    deck, queue, newCardsPool, batchSize, favoritesOnly: !!opts.favoritesOnly,
+    totalAtStart: queue.length,
     studiedIds: new Set(), againCount: 0, goodOrBetterCount: 0,
     revealed: false
   };
@@ -921,10 +979,11 @@ function flashcardMarkup(card) {
   if (card.mcData) {
     const { front, back } = renderMcCard(card.mcData);
     return `
-      <div class="side-label">Vorderseite</div>
-      <div id="card-front" class="anki-card-scope">${front}</div>
+      <div id="card-front-wrap">
+        <div class="side-label">Vorderseite</div>
+        <div id="card-front" class="anki-card-scope">${front}</div>
+      </div>
       <div id="card-back-wrap" style="display:none">
-        <hr class="divider">
         <div class="side-label">Rückseite</div>
         <div id="card-back" class="anki-card-scope">${back}</div>
       </div>
@@ -933,10 +992,11 @@ function flashcardMarkup(card) {
   const scopedCss = scopeCss(card.css || '', 'anki-card-scope');
   return `
     <style>${scopedCss}</style>
-    <div class="side-label">Vorderseite</div>
-    <div id="card-front" class="anki-card-scope">${card.front}</div>
+    <div id="card-front-wrap">
+      <div class="side-label">Vorderseite</div>
+      <div id="card-front" class="anki-card-scope">${card.front}</div>
+    </div>
     <div id="card-back-wrap" style="display:none">
-      <hr class="divider">
       <div class="side-label">Rückseite</div>
       <div id="card-back" class="anki-card-scope">${card.back}</div>
     </div>
@@ -945,7 +1005,17 @@ function flashcardMarkup(card) {
 
 function renderStudyView() {
   const s = currentSession;
-  if (!s || s.queue.length === 0) {
+  if (!s) return;
+
+  // Warteschlange leer, aber im Pool warten noch unbearbeitete neue Karten:
+  // nächste Charge nachziehen statt die Sitzung zu beenden (unendliches Lernen).
+  if (s.queue.length === 0 && s.newCardsPool && s.newCardsPool.length > 0) {
+    const nextBatch = s.newCardsPool.splice(0, s.batchSize || 20);
+    s.queue = s.queue.concat(nextBatch);
+    s.totalAtStart += nextBatch.length;
+  }
+
+  if (s.queue.length === 0) {
     renderSessionSummary();
     return;
   }
@@ -956,8 +1026,8 @@ function renderStudyView() {
   app.innerHTML = `
     <header class="topbar">
       <button class="back-btn" id="exit-session">Beenden</button>
-      <h1 style="font-size:1.1rem">${escapeHtml(s.deck.name)}</h1>
-      <span style="width:60px"></span>
+      <h1 style="font-size:1.1rem">${escapeHtml(s.deck.name)}${s.favoritesOnly ? ' ⭐' : ''}</h1>
+      <button class="fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'}</button>
     </header>
     <main>
       <div class="progress-wrap">
@@ -982,6 +1052,12 @@ function renderStudyView() {
     renderHome();
   });
 
+  document.getElementById('fav-toggle').addEventListener('click', async () => {
+    card.favorite = !card.favorite;
+    await Store.updateCard(card);
+    document.getElementById('fav-toggle').textContent = card.favorite ? '⭐' : '☆';
+  });
+
   const flashcard = document.getElementById('flashcard');
   let lastTap = 0;
   flashcard.addEventListener('click', () => {
@@ -999,9 +1075,12 @@ function renderStudyView() {
   typesetMath();
 }
 
-// Doppeltipp dreht die Karte um — erneuter Doppeltipp dreht sie zurück zur Vorderseite
+// Doppeltipp zeigt NUR die Rückseite (Vorderseite wird ausgeblendet, kein
+// Scrollen nötig, um die Bewertungsbuttons zu erreichen) — erneuter
+// Doppeltipp zeigt wieder nur die Vorderseite.
 // (wird sowohl in der Lern- als auch in der Durchsehen-Ansicht verwendet)
 function toggleCardFace() {
+  const frontWrap = document.getElementById('card-front-wrap');
   const backWrap = document.getElementById('card-back-wrap');
   const answerButtons = document.getElementById('answer-buttons');
   const tapHint = document.getElementById('tap-hint');
@@ -1009,10 +1088,12 @@ function toggleCardFace() {
   const isRevealed = backWrap.style.display === 'block';
   if (isRevealed) {
     backWrap.style.display = 'none';
+    if (frontWrap) frontWrap.style.display = '';
     if (answerButtons) answerButtons.style.display = 'none';
     if (tapHint) tapHint.style.display = 'block';
   } else {
     backWrap.style.display = 'block';
+    if (frontWrap) frontWrap.style.display = 'none';
     if (answerButtons) answerButtons.style.display = 'grid';
     if (tapHint) tapHint.style.display = 'none';
   }
@@ -1037,27 +1118,129 @@ async function startBrowseSession(deckId) {
     showToast('Dieser Stapel enthält keine Karten');
     return;
   }
-  browseSession = { deck, cards, index: 0 };
+  browseSession = { deck, cards, index: 0, mode: 'single' };
   renderBrowseView();
+}
+
+// Kurzvorschau einer Karte für Kachel-/Listenansicht: Klartext (HTML-Tags
+// entfernt) plus erstes Bild, falls vorhanden.
+function getCardPreview(card) {
+  const html = card.mcData ? card.mcData.frage : (card.front || '');
+  const imgMatch = /<img[^>]+src="([^"]*)"/.exec(html);
+  const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return { text: text || '(ohne Text)', imgSrc: imgMatch ? imgMatch[1] : null };
 }
 
 function renderBrowseView() {
   const b = browseSession;
   if (!b) return;
+  if (b.mode === 'grid') { renderBrowseGridView(); return; }
+  if (b.mode === 'list') { renderBrowseListView(); return; }
+  renderBrowseSingleView();
+}
+
+function browseHeaderHtml(activeMode) {
+  return `
+    <header class="topbar">
+      <button class="back-btn" id="exit-browse">Fertig</button>
+      <h1 style="font-size:1.1rem">${escapeHtml(browseSession.deck.name)}</h1>
+      <div class="browse-mode-switch">
+        <button class="mode-btn ${activeMode === 'single' ? 'active' : ''}" data-mode="single" title="Einzelkarten">🔲</button>
+        <button class="mode-btn ${activeMode === 'grid' ? 'active' : ''}" data-mode="grid" title="Kacheln">▦</button>
+        <button class="mode-btn ${activeMode === 'list' ? 'active' : ''}" data-mode="list" title="Liste">☰</button>
+      </div>
+    </header>`;
+}
+
+function wireBrowseHeader() {
+  document.getElementById('exit-browse').addEventListener('click', () => {
+    browseSession = null;
+    renderHome();
+  });
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => { browseSession.mode = btn.dataset.mode; renderBrowseView(); });
+  });
+}
+
+// Toggle-Buttons für Favoriten in Kachel-/Listenansicht: Klick auf den Stern
+// schaltet nur den Favoritenstatus um (stopPropagation), Klick daneben
+// springt in die Einzelkartenansicht an dieser Stelle.
+function wireCardPreviewInteractions(itemSelector) {
+  document.querySelectorAll(itemSelector).forEach(el => {
+    el.addEventListener('click', () => {
+      browseSession.index = parseInt(el.dataset.index, 10);
+      browseSession.mode = 'single';
+      renderBrowseView();
+    });
+  });
+  document.querySelectorAll('.tile-fav-btn, .row-fav-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.index, 10);
+      const card = browseSession.cards[idx];
+      card.favorite = !card.favorite;
+      await Store.updateCard(card);
+      renderBrowseView();
+    });
+  });
+}
+
+function renderBrowseGridView() {
+  const b = browseSession;
+  const tilesHtml = b.cards.map((card, i) => {
+    const p = getCardPreview(card);
+    return `
+      <div class="card-tile" data-index="${i}">
+        <button class="tile-fav-btn" data-index="${i}">${card.favorite ? '⭐' : '☆'}</button>
+        ${p.imgSrc ? `<div class="card-tile-img" style="background-image:url('${p.imgSrc}')"></div>` : ''}
+        <div class="card-tile-text">${escapeHtml(p.text.slice(0, 90))}</div>
+      </div>`;
+  }).join('');
+
+  app.innerHTML = `
+    ${browseHeaderHtml('grid')}
+    <main>
+      <div class="card-grid">${tilesHtml}</div>
+    </main>
+  `;
+  wireBrowseHeader();
+  wireCardPreviewInteractions('.card-tile');
+}
+
+function renderBrowseListView() {
+  const b = browseSession;
+  const rowsHtml = b.cards.map((card, i) => {
+    const p = getCardPreview(card);
+    return `
+      <div class="card-row" data-index="${i}">
+        <button class="row-fav-btn" data-index="${i}">${card.favorite ? '⭐' : '☆'}</button>
+        <span class="card-row-text">${escapeHtml(p.text.slice(0, 100))}</span>
+      </div>`;
+  }).join('');
+
+  app.innerHTML = `
+    ${browseHeaderHtml('list')}
+    <main>
+      <div class="card-simplelist">${rowsHtml}</div>
+    </main>
+  `;
+  wireBrowseHeader();
+  wireCardPreviewInteractions('.card-row');
+}
+
+function renderBrowseSingleView() {
+  const b = browseSession;
   const card = b.cards[b.index];
   const pct = Math.round(((b.index + 1) / b.cards.length) * 100);
 
   app.innerHTML = `
-    <header class="topbar">
-      <button class="back-btn" id="exit-browse">Fertig</button>
-      <h1 style="font-size:1.1rem">${escapeHtml(b.deck.name)}</h1>
-      <span style="width:60px"></span>
-    </header>
+    ${browseHeaderHtml('single')}
     <main>
       <div class="progress-wrap">
         <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
         <div class="progress-count">${b.index + 1} / ${b.cards.length}</div>
       </div>
+      <div class="fav-row"><button class="fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'} Favorit</button></div>
       <div class="card-area">
         <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
       </div>
@@ -1069,15 +1252,17 @@ function renderBrowseView() {
     </main>
   `;
 
-  document.getElementById('exit-browse').addEventListener('click', () => {
-    browseSession = null;
-    renderHome();
-  });
+  wireBrowseHeader();
   document.getElementById('browse-prev').addEventListener('click', () => {
     if (browseSession.index > 0) { browseSession.index--; renderBrowseView(); }
   });
   document.getElementById('browse-next').addEventListener('click', () => {
     if (browseSession.index < browseSession.cards.length - 1) { browseSession.index++; renderBrowseView(); }
+  });
+  document.getElementById('fav-toggle').addEventListener('click', async () => {
+    card.favorite = !card.favorite;
+    await Store.updateCard(card);
+    document.getElementById('fav-toggle').textContent = (card.favorite ? '⭐' : '☆') + ' Favorit';
   });
 
   const flashcard = document.getElementById('flashcard');
