@@ -185,6 +185,26 @@ window.MathJax = {
   .flashcard img { max-width: 100%; height: auto; border-radius: 10px; }
   .cloze-answer { color: var(--good); font-weight: 700; }
   .anki-card-scope { display: block; }
+
+  .mc-question { font-weight: 700; margin-bottom: 18px; }
+  .mc-options { display: flex; flex-direction: column; gap: 10px; text-align: left; }
+  .mc-option {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--bg-a); border: 1px solid var(--line);
+    border-radius: 14px; padding: 12px 16px; font-size: .95rem;
+  }
+  .mc-badge {
+    flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent-dark);
+    display: flex; align-items: center; justify-content: center; font-weight: 700;
+  }
+  .mc-option.mc-correct { background: rgba(95,163,119,.15); border-color: var(--good); }
+  .mc-option.mc-correct .mc-badge { background: var(--good); color: #fff; }
+  .mc-correct-box {
+    margin-top: 18px; background: rgba(95,163,119,.15); color: var(--accent-dark);
+    border-radius: 14px; padding: 12px 16px; font-weight: 600; text-align: left;
+  }
+  .mc-explanation { margin-top: 14px; color: var(--ink-soft); font-size: .95rem; text-align: left; }
   #card-back-wrap { animation: reveal-in .3s ease; }
   @keyframes reveal-in {
     from { opacity: 0; transform: translateY(-4px); }
@@ -440,6 +460,23 @@ async function parseApkg(file) {
     const fieldsMap = {};
     fieldNames.forEach((name, i) => { fieldsMap[name] = fieldValues[i] || ''; });
 
+    // MC-Karte Shuffle: Optionen werden nicht statisch gerendert, sondern bei
+    // jedem Anzeigen live gemischt (siehe renderMcCard). Deshalb hier nur die
+    // Rohfelder mitnehmen statt fertiges Front-/Back-HTML zu erzeugen.
+    if (isMcShuffleNote(fieldsMap)) {
+      parsedCards.push({
+        front: '', back: '', css: '',
+        mcData: {
+          frage: insertMedia(fieldsMap['Frage'] || '', mediaUrls),
+          options: ['A', 'B', 'C', 'D'].map(f => insertMedia(fieldsMap[f] || '', mediaUrls)),
+          correctIndex: parseInt(fieldsMap['AntwortNr'], 10) || 0,
+          richtigText: insertMedia(fieldsMap['RichtigText'] || '', mediaUrls),
+          erklaerung: insertMedia(fieldsMap['Erklaerung'] || '', mediaUrls)
+        }
+      });
+      continue;
+    }
+
     const isClozeModel = model.type === 1;
     const tmpl = isClozeModel ? model.tmpls[0] : model.tmpls[ord];
     if (!tmpl) continue;
@@ -464,6 +501,12 @@ function insertMedia(html, mediaUrls) {
     if (mediaUrls[src]) return `src="${mediaUrls[src]}"`;
     return match; // Bild fehlt: Original-Pfad belassen, kein Absturz
   });
+}
+
+// Erkennt Notizen vom Typ "MC-Karte Shuffle" anhand ihrer Felder (nicht am
+// Notiztyp-Namen, da der beim Export leicht abweichen kann).
+function isMcShuffleNote(fieldsMap) {
+  return ['Frage', 'A', 'B', 'C', 'D', 'AntwortNr'].every(f => f in fieldsMap);
 }
 
 /* ---------------------------------------------------------------------
@@ -789,7 +832,7 @@ async function saveImportedDeck(name, parsedCards) {
   });
   const now = Date.now();
   const cards = parsedCards.map(c => ({
-    deckId, front: c.front, back: c.back, css: c.css || '',
+    deckId, front: c.front, back: c.back, css: c.css || '', mcData: c.mcData || null,
     ease: 2.5, interval: 0, reps: 0, lapses: 0,
     due: now, firstReviewDone: false, created: now
   }));
@@ -843,10 +886,50 @@ function shuffle(arr) {
   return a;
 }
 
+// Baut Front-/Back-HTML für eine MC-Karte-Shuffle-Karte. Die vier Optionen
+// werden per Fisher-Yates neu gemischt und A-D neu beschriftet; da diese
+// Funktion nur einmal pro Aufruf von flashcardMarkup läuft (also einmal pro
+// "Ansehen" der Karte), bleibt die Reihenfolge zwischen Vorder- und Rückseite
+// derselben Ansicht konsistent, ändert sich aber beim nächsten Anzeigen neu.
+function renderMcCard(mcData) {
+  const order = shuffle([0, 1, 2, 3]); // Position -> ursprünglicher Options-Index
+  const letters = ['A', 'B', 'C', 'D'];
+
+  let frontOptionsHtml = '';
+  let backOptionsHtml = '';
+  order.forEach((origIdx, pos) => {
+    const letter = letters[pos];
+    const text = mcData.options[origIdx] || '';
+    const isCorrect = origIdx === mcData.correctIndex;
+    frontOptionsHtml += `<div class="mc-option"><span class="mc-badge">${letter}</span><span class="mc-option-text">${text}</span></div>`;
+    backOptionsHtml += `<div class="mc-option${isCorrect ? ' mc-correct' : ''}"><span class="mc-badge">${letter}</span><span class="mc-option-text">${text}</span></div>`;
+  });
+
+  const front = `<div class="mc-question">${mcData.frage}</div><div class="mc-options">${frontOptionsHtml}</div>`;
+  const back = `
+    <div class="mc-options">${backOptionsHtml}</div>
+    ${mcData.richtigText ? `<div class="mc-correct-box">Richtige Antwort: ${mcData.richtigText}</div>` : ''}
+    ${mcData.erklaerung ? `<div class="mc-explanation">${mcData.erklaerung}</div>` : ''}
+  `;
+  return { front, back };
+}
+
 // Gemeinsames Karten-Markup für Lern- und Durchsehen-Ansicht.
 // Bindet die (auf den Wrapper beschränkte) Notiztyp-CSS ein, damit z.B.
 // Multiple-Choice-Layouts, Farben und Abstände wie im echten Anki aussehen.
 function flashcardMarkup(card) {
+  if (card.mcData) {
+    const { front, back } = renderMcCard(card.mcData);
+    return `
+      <div class="side-label">Vorderseite</div>
+      <div id="card-front" class="anki-card-scope">${front}</div>
+      <div id="card-back-wrap" style="display:none">
+        <hr class="divider">
+        <div class="side-label">Rückseite</div>
+        <div id="card-back" class="anki-card-scope">${back}</div>
+      </div>
+    `;
+  }
   const scopedCss = scopeCss(card.css || '', 'anki-card-scope');
   return `
     <style>${scopedCss}</style>
