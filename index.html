@@ -114,7 +114,7 @@ window.MathJax = {
   .deck-card {
     background: var(--card-bg); border-radius: var(--radius);
     padding: 18px 20px; box-shadow: var(--shadow-sm);
-    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    display: flex; flex-direction: column; gap: 14px;
     transition: box-shadow .2s, transform .2s;
   }
   .deck-card:hover { box-shadow: var(--shadow-md); }
@@ -123,9 +123,9 @@ window.MathJax = {
     background: linear-gradient(135deg, var(--accent-soft), #f6efdd);
     display: flex; align-items: center; justify-content: center; font-size: 1.3rem;
   }
-  .deck-card .deck-main { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
+  .deck-card .deck-main { display: flex; align-items: center; gap: 14px; min-width: 0; }
   .deck-card .deck-info { flex: 1; min-width: 0; }
-  .deck-card .deck-name { font-weight: 700; font-size: 1.1rem; margin-bottom: 4px; word-break: break-word; }
+  .deck-card .deck-name { font-weight: 700; font-size: 1.1rem; margin-bottom: 4px; overflow-wrap: break-word; }
   .deck-card .deck-meta { color: var(--ink-soft); font-size: .88rem; }
   .deck-card .deck-meta .due-badge {
     display: inline-block; background: var(--accent-soft); color: var(--accent-dark);
@@ -140,9 +140,9 @@ window.MathJax = {
     height: 100%; transition: width .3s ease;
   }
   .deck-stats-text { color: var(--ink-soft); font-size: .78rem; margin-top: 5px; }
-  .deck-card .deck-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+  .deck-card .deck-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .deck-card .delete-btn {
-    background: none; color: var(--again); font-size: .85rem; padding: 10px;
+    background: none; color: var(--again); font-size: .85rem; padding: 10px; margin-left: auto;
   }
   .empty-hint { color: var(--ink-soft); text-align: center; padding: 48px 20px; font-size: 1rem; }
   .empty-hint .empty-icon { font-size: 2.4rem; display: block; margin-bottom: 10px; }
@@ -161,8 +161,16 @@ window.MathJax = {
 
   .card-area {
     display: flex; align-items: center; justify-content: center;
-    min-height: 48vh; perspective: 1200px;
+    min-height: 48vh; perspective: 1200px; position: relative;
   }
+  .card-fav-btn {
+    position: absolute; top: 10px; right: 10px; z-index: 5;
+    width: 42px; height: 42px; border-radius: 50%; padding: 0;
+    background: rgba(255,255,255,.85); border: none; box-shadow: var(--shadow-sm);
+    font-size: 1.25rem; display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  .card-fav-btn:active { transform: scale(.92); }
   .flashcard {
     background: var(--card-bg); border-radius: var(--radius);
     box-shadow: var(--shadow-lg);
@@ -228,9 +236,6 @@ window.MathJax = {
 
   .browse-nav { display: flex; gap: 10px; margin-top: 20px; }
   .browse-nav button { flex: 1; }
-
-  .fav-row { display: flex; justify-content: center; margin: -6px 0 10px; }
-  .fav-btn { background: none; border: none; color: var(--accent-dark); font-size: .95rem; font-weight: 600; padding: 6px 10px; cursor: pointer; }
 
   .browse-mode-switch { display: flex; gap: 4px; }
   .mode-btn { background: rgba(255,255,255,.6); border: none; border-radius: 10px; padding: 8px 10px; font-size: .95rem; cursor: pointer; }
@@ -311,10 +316,6 @@ window.MathJax = {
 
   @media (min-width: 600px) {
     .flashcard { font-size: 1.4rem; }
-  }
-  @media (max-width: 480px) {
-    .deck-card { flex-direction: column; align-items: stretch; }
-    .deck-card .deck-actions { justify-content: flex-end; }
   }
 </style>
 </head>
@@ -767,7 +768,7 @@ async function renderHome() {
     btn.addEventListener('click', () => startBrowseSession(parseInt(btn.dataset.id, 10)));
   });
   app.querySelectorAll('[data-action="study-fav"]').forEach(btn => {
-    btn.addEventListener('click', () => startStudySession(parseInt(btn.dataset.id, 10), { favoritesOnly: true }));
+    btn.addEventListener('click', () => startFavoritesSession(parseInt(btn.dataset.id, 10)));
   });
   app.querySelectorAll('[data-action="delete"]').forEach(btn => {
     btn.addEventListener('click', () => confirmDeleteDeck(parseInt(btn.dataset.id, 10)));
@@ -889,21 +890,13 @@ async function saveImportedDeck(name, parsedCards) {
 /* ---------------------------------------------------------------------
    Lern-Sitzung
    --------------------------------------------------------------------- */
-// opts.favoritesOnly: nur favorisierte Karten dieses Stapels lernen.
 // Neue Karten werden in Chargen von deck.newPerDay eingeführt, aber die
 // Sitzung stoppt NIE deswegen — läuft die Warteschlange leer und es gibt noch
 // unbearbeitete Karten im Pool, wird automatisch die nächste Charge nachgezogen
 // (siehe renderStudyView). Man kann also beliebig lange weiterlernen.
-async function startStudySession(deckId, opts = {}) {
+async function startStudySession(deckId) {
   const deck = await Store.getDeck(deckId);
-  let allCards = await Store.getCardsForDeck(deckId);
-  if (opts.favoritesOnly) {
-    allCards = allCards.filter(c => c.favorite);
-    if (allCards.length === 0) {
-      showToast('Keine Favoriten in diesem Stapel');
-      return;
-    }
-  }
+  const allCards = await Store.getCardsForDeck(deckId);
   const today = Date.now();
   const todayStr = new Date().toDateString();
 
@@ -926,7 +919,7 @@ async function startStudySession(deckId, opts = {}) {
   }
 
   currentSession = {
-    deck, queue, newCardsPool, batchSize, favoritesOnly: !!opts.favoritesOnly,
+    deck, queue, newCardsPool, batchSize,
     totalAtStart: queue.length,
     studiedIds: new Set(), againCount: 0, goodOrBetterCount: 0,
     revealed: false
@@ -1026,8 +1019,8 @@ function renderStudyView() {
   app.innerHTML = `
     <header class="topbar">
       <button class="back-btn" id="exit-session">Beenden</button>
-      <h1 style="font-size:1.1rem">${escapeHtml(s.deck.name)}${s.favoritesOnly ? ' ⭐' : ''}</h1>
-      <button class="fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'}</button>
+      <h1 style="font-size:1.1rem">${escapeHtml(s.deck.name)}</h1>
+      <span style="width:60px"></span>
     </header>
     <main>
       <div class="progress-wrap">
@@ -1035,6 +1028,7 @@ function renderStudyView() {
         <div class="progress-count">${doneCount} / ${s.totalAtStart}</div>
       </div>
       <div class="card-area">
+        <button class="card-fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'}</button>
         <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
       </div>
       <div class="tap-hint" id="tap-hint">Doppeltipp zum Umdrehen</div>
@@ -1118,7 +1112,24 @@ async function startBrowseSession(deckId) {
     showToast('Dieser Stapel enthält keine Karten');
     return;
   }
-  browseSession = { deck, cards, index: 0, mode: 'single' };
+  browseSession = { deck, cards, index: 0, mode: 'single', favoritesMode: false };
+  renderBrowseView();
+}
+
+// Favoriten lernen: einfaches Durchgehen NUR der favorisierten Karten,
+// komplett unabhängig vom SM-2-Algorithmus (keine Bewertungsbuttons, keine
+// Änderung an ease/interval/due) und unabhängig davon, ob eine Karte im
+// normalen Lernmodus schon "fällig" ist oder nicht — Favoriten sind immer
+// lernbar. Nutzt dieselbe Durchsehen-Infrastruktur (Einzel-/Kachel-/Listenansicht).
+async function startFavoritesSession(deckId) {
+  const deck = await Store.getDeck(deckId);
+  const cards = await Store.getCardsForDeck(deckId);
+  const favCards = cards.filter(c => c.favorite);
+  if (favCards.length === 0) {
+    showToast('Keine Favoriten in diesem Stapel');
+    return;
+  }
+  browseSession = { deck, cards: favCards, index: 0, mode: 'single', favoritesMode: true };
   renderBrowseView();
 }
 
@@ -1143,7 +1154,7 @@ function browseHeaderHtml(activeMode) {
   return `
     <header class="topbar">
       <button class="back-btn" id="exit-browse">Fertig</button>
-      <h1 style="font-size:1.1rem">${escapeHtml(browseSession.deck.name)}</h1>
+      <h1 style="font-size:1.1rem">${escapeHtml(browseSession.deck.name)}${browseSession.favoritesMode ? ' ⭐' : ''}</h1>
       <div class="browse-mode-switch">
         <button class="mode-btn ${activeMode === 'single' ? 'active' : ''}" data-mode="single" title="Einzelkarten">🔲</button>
         <button class="mode-btn ${activeMode === 'grid' ? 'active' : ''}" data-mode="grid" title="Kacheln">▦</button>
@@ -1240,8 +1251,8 @@ function renderBrowseSingleView() {
         <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
         <div class="progress-count">${b.index + 1} / ${b.cards.length}</div>
       </div>
-      <div class="fav-row"><button class="fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'} Favorit</button></div>
       <div class="card-area">
+        <button class="card-fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'}</button>
         <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
       </div>
       <div class="tap-hint" id="tap-hint">Doppeltipp zum Umdrehen</div>
@@ -1253,6 +1264,11 @@ function renderBrowseSingleView() {
   `;
 
   wireBrowseHeader();
+  document.getElementById('fav-toggle').addEventListener('click', async () => {
+    card.favorite = !card.favorite;
+    await Store.updateCard(card);
+    document.getElementById('fav-toggle').textContent = card.favorite ? '⭐' : '☆';
+  });
   document.getElementById('browse-prev').addEventListener('click', () => {
     if (browseSession.index > 0) { browseSession.index--; renderBrowseView(); }
   });
