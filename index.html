@@ -223,16 +223,20 @@ window.MathJax = {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
     margin-top: 20px;
   }
+  .answer-buttons.answer-buttons-5 { grid-template-columns: repeat(5, 1fr); gap: 7px; }
   .answer-buttons button {
     padding: 16px 6px; font-weight: 700; color: #fff; font-size: .95rem;
     box-shadow: var(--shadow-sm);
   }
+  .answer-buttons.answer-buttons-5 button { padding: 14px 4px; font-size: .85rem; }
   .answer-buttons button:active { transform: scale(.96); }
+  .answer-buttons .btn-defer { background: linear-gradient(135deg, #4a4a4a, #1c1c1c); }
   .answer-buttons .btn-again { background: linear-gradient(135deg, var(--again), #b8523f); }
   .answer-buttons .btn-hard { background: linear-gradient(135deg, var(--hard), #c98a2e); }
   .answer-buttons .btn-good { background: linear-gradient(135deg, var(--good), #468a63); }
   .answer-buttons .btn-easy { background: linear-gradient(135deg, var(--easy), #3a749f); }
   .answer-buttons button .sub { display: block; font-size: .72rem; font-weight: 400; opacity: .85; margin-top: 2px; }
+  .answer-buttons.answer-buttons-5 button .sub { font-size: .66rem; }
 
   .browse-nav { display: flex; gap: 10px; margin-top: 20px; }
   .browse-nav button { flex: 1; }
@@ -625,98 +629,94 @@ function scopeCss(css, scopeClass) {
 }
 
 /* ---------------------------------------------------------------------
-   Wiederholungsalgorithmus mit Lernschritten (Anki-ähnlich)
+   Wiederholungsalgorithmus mit Lernschritten
    ---------------------------------------------------------------------
-   Zwei Phasen pro Karte:
-   - LERNPHASE (neue + zurückgestufte Karten, interval < 1 Tag): kurze
-     Minuten-Schritte. Nochmal=2 Min, Schwer=6 Min, Gut=15 Min (beim zweiten
-     Gut wird die Karte "graduiert" = auf 1 Tag gesetzt), Leicht=sofort 1 Tag.
-     Solche Karten kommen INNERHALB der Sitzung nach Ablauf ihrer Minuten
-     wieder dran (siehe pickNextCard) — verschachtelt mit neuen Karten.
-   - WIEDERHOLPHASE (graduierte Karten, interval >= 1 Tag): Tages-Schritte.
-     Nochmal=Rückfall in die Lernphase (2 Min), Schwer=Intervall x1,2,
-     Gut=Intervall x1,6, Leicht=Intervall x2 (verdoppeln: 1->2->4->8 Tage).
-   Alles arbeitet nur mit den vorhandenen Kartenfeldern (interval/due/ease/
-   reps/lapses/firstReviewDone) — bestehende Stapel funktionieren ohne
-   Neu-Import weiter.
+   Vier Bewertungen + ein "Später"-Button (siehe deferCard).
+   - LERNPHASE (neue + zurückgestufte Karten, interval < 1 Tag):
+       Nochmal = 2 Min, Schwer = 6 Min, Gut = 15 Min, Leicht = 1 Tag (graduiert).
+   - WIEDERHOLPHASE (interval >= 1 Tag):
+       Nochmal = 2 Min, Schwer = 6 Min (beide zurück in die Lernphase),
+       Gut = HÄLT das aktuelle Intervall (wird nie größer/kleiner),
+       Leicht = ERHÖHT: verdoppeln, aber gedeckelt bei 4 Tagen (1->2->4->4...).
+   Nur Leicht vergrößert das Intervall; Gut hält es konstant. Karten in der
+   Lernphase kommen INNERHALB der Sitzung nach ihren Minuten wieder (pickNextCard).
+   card.mastered = zuletzt mindestens Gut bewertet (true) bzw. Nochmal/Schwer/neu
+   (false) — steuert, wann zurückgestellte Karten wieder freigegeben werden.
+   Alles arbeitet nur mit vorhandenen Kartenfeldern -> bestehende Stapel ohne
+   Neu-Import kompatibel.
    --------------------------------------------------------------------- */
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const STEP_AGAIN_MS = 2 * 60 * 1000;    // 2 Minuten
 const STEP_HARD_MS  = 6 * 60 * 1000;    // 6 Minuten
 const STEP_GOOD_MS  = 15 * 60 * 1000;   // 15 Minuten
-const GOOD_STEP_DAYS = STEP_GOOD_MS / ONE_DAY_MS;
+const LEICHT_CAP_DAYS = 4;              // Leicht deckelt bei 4 Tagen
 
 // Ist die Karte noch in der Lernphase (Minuten-Schritte)?
 function isLearningCard(card) {
   return !card.firstReviewDone || (card.interval || 0) < 1;
 }
 
-// Berechnet die vier nächsten Intervalle (in Tagen, ggf. Bruchteile) für die
-// aktuelle Karte, OHNE sie zu verändern — für die Anzeige auf den Buttons und
-// als Grundlage für scheduleCard.
+// Die vier nächsten Intervalle (in Tagen, ggf. Bruchteile) für die Karte, OHNE
+// Mutation — für die Anzeige auf den Buttons und als Grundlage für scheduleCard.
 function previewSchedule(card) {
   if (isLearningCard(card)) {
-    const atGoodStep = (card.interval || 0) >= GOOD_STEP_DAYS - 1e-9;
     return {
-      1: STEP_AGAIN_MS / ONE_DAY_MS,                    // Nochmal: 2 Min
-      3: STEP_HARD_MS / ONE_DAY_MS,                     // Schwer: 6 Min
-      4: atGoodStep ? 1 : (STEP_GOOD_MS / ONE_DAY_MS),  // Gut: 15 Min, dann 1 Tag
-      5: 1,                                             // Leicht: 1 Tag (graduiert)
+      1: STEP_AGAIN_MS / ONE_DAY_MS,   // Nochmal: 2 Min
+      3: STEP_HARD_MS / ONE_DAY_MS,    // Schwer: 6 Min
+      4: STEP_GOOD_MS / ONE_DAY_MS,    // Gut: 15 Min
+      5: 1,                            // Leicht: 1 Tag (graduiert)
     };
   }
   const iv = card.interval || 1;
   return {
-    1: STEP_AGAIN_MS / ONE_DAY_MS,       // Nochmal: Rückfall auf 2 Min
-    3: Math.max(1, Math.round(iv * 1.2)),
-    4: Math.max(1, Math.round(iv * 1.6)),
-    5: Math.max(2, Math.round(iv * 2)),  // Leicht: verdoppeln
+    1: STEP_AGAIN_MS / ONE_DAY_MS,     // Nochmal: 2 Min
+    3: STEP_HARD_MS / ONE_DAY_MS,      // Schwer: 6 Min
+    4: iv,                             // Gut: Intervall bleibt gleich
+    5: Math.min(LEICHT_CAP_DAYS, Math.max(2, Math.round(iv * 2))), // Leicht: verdoppeln, max 4 Tage
   };
 }
 
-// Wendet die Bewertung an und setzt interval/due/ease/reps/lapses.
-// Rückgabe { learning }: true = Karte bleibt in der Sitzung (Minuten-Schritt,
-// kommt gleich wieder), false = Karte ist auf Tage geplant und verlässt die
-// aktive Warteschlange.
+// Wendet die Bewertung an. Rückgabe { learning }: true = Karte bleibt in der
+// Sitzung (Minuten-Schritt, kommt gleich wieder), false = auf Tage geplant und
+// verlässt die aktive Warteschlange.
 function scheduleCard(card, q) {
   const now = Date.now();
   const learning = isLearningCard(card);
 
-  if (q === 1) {
-    // Nochmal — zurück in die Lernphase, 2 Minuten
+  if (q === 1) {                 // Nochmal -> 2 Min, zurück in die Lernphase
     if (!learning) card.lapses = (card.lapses || 0) + 1;
-    card.ease = Math.max(1.3, (card.ease || 2.5) - 0.20);
     card.reps = 0;
+    card.mastered = false;
     card.interval = STEP_AGAIN_MS / ONE_DAY_MS;
     card.due = now + STEP_AGAIN_MS;
     return { learning: true };
   }
+  if (q === 3) {                 // Schwer -> 6 Min, zurück in die Lernphase
+    card.reps = 0;
+    card.mastered = false;
+    card.interval = STEP_HARD_MS / ONE_DAY_MS;
+    card.due = now + STEP_HARD_MS;
+    return { learning: true };
+  }
 
-  if (learning) {
-    if (q === 3) {
-      // Schwer: 6 Minuten, bleibt in der Lernphase
-      card.interval = STEP_HARD_MS / ONE_DAY_MS;
-      card.due = now + STEP_HARD_MS;
-      return { learning: true };
-    }
-    const atGoodStep = (card.interval || 0) >= GOOD_STEP_DAYS - 1e-9;
-    if (q === 4 && !atGoodStep) {
-      // erster Gut-Schritt: 15 Minuten, bleibt in der Lernphase
-      card.interval = STEP_GOOD_MS / ONE_DAY_MS;
+  // Gut (4) und Leicht (5) gelten als "gekonnt"
+  card.mastered = true;
+
+  if (q === 4) {                 // Gut -> Intervall HALTEN (nie größer/kleiner)
+    if (learning) {
+      card.interval = STEP_GOOD_MS / ONE_DAY_MS;   // 15 Min, bleibt Lernphase
       card.due = now + STEP_GOOD_MS;
       return { learning: true };
     }
-    // Gut nach dem 15-Min-Schritt ODER Leicht: graduieren auf 1 Tag
-    if (q === 5) card.ease = Math.min(3.0, (card.ease || 2.5) + 0.05);
-    card.reps = Math.max(1, card.reps || 0);
-    card.interval = 1;
-    card.due = now + ONE_DAY_MS;
+    card.reps = (card.reps || 0) + 1;
+    card.due = now + Math.round((card.interval || 1) * ONE_DAY_MS); // gleiches Intervall
     return { learning: false };
   }
 
-  // Wiederholphase (Tages-Schritte)
-  const days = previewSchedule(card)[q];
-  if (q === 3) card.ease = Math.max(1.3, (card.ease || 2.5) - 0.15);
-  if (q === 5) card.ease = Math.min(3.0, (card.ease || 2.5) + 0.05);
+  // q === 5, Leicht -> ERHÖHEN (verdoppeln, max 4 Tage)
+  const days = learning
+    ? 1                                                              // graduiert auf 1 Tag
+    : Math.min(LEICHT_CAP_DAYS, Math.max(2, Math.round((card.interval || 1) * 2)));
   card.reps = (card.reps || 0) + 1;
   card.interval = days;
   card.due = now + Math.round(days * ONE_DAY_MS);
@@ -736,7 +736,7 @@ function fmtInterval(days) {
 }
 
 function newCardState() {
-  return { ease: 2.5, interval: 0, reps: 0, lapses: 0, due: Date.now(), firstReviewDone: false };
+  return { ease: 2.5, interval: 0, reps: 0, lapses: 0, due: Date.now(), firstReviewDone: false, mastered: false, deferred: false };
 }
 
 // Fortschritts-Kennzahlen pro Stapel für die Startseite
@@ -968,6 +968,10 @@ async function saveImportedDeck(name, parsedCards) {
    - Ist heute nichts fällig, kann man trotzdem VORAUSLERNEN: alle noch nicht
      fälligen Wiederholkarten, sortiert nach Priorität (am schlechtesten
      gelernte zuerst). So endet "Lernen starten" nie ins Leere.
+   - ZURÜCKGESTELLTE Karten (card.deferred, per "Später"-Button) werden komplett
+     ausgeblendet und erst wieder eingespielt, wenn ALLE anderen (nicht
+     zurückgestellten) Karten mindestens einmal Gut/Leicht bewertet wurden
+     (card.mastered) — siehe releaseIfReady.
    --------------------------------------------------------------------- */
 async function startStudySession(deckId) {
   const deck = await Store.getDeck(deckId);
@@ -986,22 +990,26 @@ async function startStudySession(deckId) {
     return;
   }
 
+  // Zurückgestellte Karten kommen zunächst in eine eigene Ablage.
+  const deferredPool = allCards.filter(c => c.deferred);
+  const activeCards = allCards.filter(c => !c.deferred);
+
   // Heute fällige, graduierte Wiederholkarten
-  const reviewPool = shuffle(allCards.filter(c => c.firstReviewDone && (c.interval || 0) >= 1 && c.due <= now));
+  const reviewPool = shuffle(activeCards.filter(c => c.firstReviewDone && (c.interval || 0) >= 1 && c.due <= now));
   // Brandneue Karten (noch nie gelernt)
-  const newPool = shuffle(allCards.filter(c => !c.firstReviewDone));
+  const newPool = shuffle(activeCards.filter(c => !c.firstReviewDone));
   // Schon fällige Lernkarten (z.B. aus einer früheren Sitzung zurückgestuft)
-  const dueLearning = allCards.filter(c => c.firstReviewDone && (c.interval || 0) < 1 && c.due <= now);
+  const dueLearning = activeCards.filter(c => c.firstReviewDone && (c.interval || 0) < 1 && c.due <= now);
   // Noch nicht fällige Wiederholkarten für das Vorauslernen. Priorität:
   // mehr Nochmal/Schwer (lapses) zuerst, dann kleinstes Intervall, dann due.
-  const aheadPool = allCards
+  const aheadPool = activeCards
     .filter(c => c.firstReviewDone && (c.interval || 0) >= 1 && c.due > now)
     .sort((a, b) => (b.lapses || 0) - (a.lapses || 0) || (a.interval || 0) - (b.interval || 0) || a.due - b.due);
 
   const batchSize = deck.newPerDay || 20;
   const plannedIds = new Set([...reviewPool, ...newPool, ...dueLearning].map(c => c.id));
 
-  if (plannedIds.size === 0 && aheadPool.length === 0) {
+  if (plannedIds.size === 0 && aheadPool.length === 0 && deferredPool.length === 0) {
     showToast('Keine Karten fällig — gut gemacht!');
     return;
   }
@@ -1010,12 +1018,17 @@ async function startStudySession(deckId) {
     deck, batchSize,
     learning: dueLearning.slice(),   // schon fällige Lernkarten sofort in Arbeit
     newPool, reviewPool, aheadPool,
-    plannedIds, graduatedIds: new Set(),
-    studiedIds: new Set(), againCount: 0, goodOrBetterCount: 0,
+    deferredPool, activeCards,
+    deferredThisSession: new Set(),  // in DIESER Sitzung zurückgestellt (nicht sofort wieder freigeben)
+    plannedIds, masteredIds: new Set(),
+    studiedIds: new Set(), againCount: 0, goodOrBetterCount: 0, deferredCount: 0,
     studyAheadActive: plannedIds.size === 0,   // ohne fällige Karten direkt voraus
     current: null,
   };
 
+  // Sind schon alle aktiven Karten gekonnt (z.B. Wiederholsitzung), sofort
+  // zurückgestellte Karten freigeben.
+  releaseIfReady(currentSession);
   renderStudyView();
 }
 
@@ -1095,6 +1108,35 @@ function removeFromPools(s, card) {
   });
 }
 
+// Gibt zurückgestellte Karten wieder frei, sobald ALLE aktiven (nicht
+// zurückgestellten) Karten mindestens einmal Gut/Leicht bewertet wurden
+// (card.mastered). Karten, die in DIESER Sitzung zurückgestellt wurden, bleiben
+// bis zur nächsten Sitzung ausgeblendet (verhindert sofortiges Wiedervorschlagen).
+// Rückgabe: true, wenn dadurch neue Karten in die Warteschlange kamen.
+function releaseIfReady(s) {
+  if (!s.deferredPool.length) return false;
+  if (s.activeCards.some(c => !c.mastered)) return false;
+  const releasable = s.deferredPool.filter(c => !s.deferredThisSession.has(c.id));
+  if (!releasable.length) return false;
+
+  const now = Date.now();
+  s.deferredPool = s.deferredPool.filter(c => s.deferredThisSession.has(c.id));
+  releasable.forEach(card => {
+    card.deferred = false;
+    Store.updateCard(card).catch(() => {});
+    s.activeCards.push(card);
+    s.plannedIds.add(card.id);
+    if (!card.firstReviewDone) {
+      s.newPool.push(card);
+    } else {
+      card.due = now; // ab jetzt fällig, damit sie wirklich wieder drankommt
+      if ((card.interval || 0) < 1) s.learning.push(card); else s.reviewPool.push(card);
+    }
+  });
+  showToast(releasable.length === 1 ? 'Zurückgestellte Karte ist wieder dran' : `${releasable.length} zurückgestellte Karten sind wieder dran`);
+  return true;
+}
+
 // Wählt die nächste anzuzeigende Karte nach Fälligkeit/Priorität, OHNE die
 // Pools zu verändern. Reihenfolge:
 //  1. fällige Lernkarte (due <= jetzt) — hat Vorrang, so tauchen Nochmal-Karten
@@ -1136,17 +1178,21 @@ function renderStudyView() {
   if (!s) return;
 
   if (!s.current) {
-    if (!advanceToNextCard(s)) { renderSessionSummary(); return; }
+    if (!advanceToNextCard(s)) {
+      // Nichts mehr aktiv — evtl. zurückgestellte Karten freigeben, sonst Ende.
+      if (releaseIfReady(s) && advanceToNextCard(s)) { /* weiter mit freigegebener Karte */ }
+      else { renderSessionSummary(); return; }
+    }
   }
   const card = s.current;
 
-  // Fortschritt: bei geplanter Arbeit (heute fällig + neu) füllt sich der
-  // Balken, sobald eine Karte die Lernphase verlässt (graduiert). Beim reinen
-  // Vorauslernen zeigt er den Anteil der schon durchgesehenen Karten.
+  // Fortschritt: bei geplanter Arbeit füllt sich der Balken nach gekonnten
+  // (mind. einmal Gut/Leicht) Karten. Beim reinen Vorauslernen zeigt er den
+  // Anteil der schon durchgesehenen Karten.
   const plannedTotal = s.plannedIds.size;
   let doneCount, denom, aheadHint;
   if (plannedTotal > 0 && !s.studyAheadActive) {
-    doneCount = s.graduatedIds.size;
+    doneCount = Math.min(s.masteredIds.size, plannedTotal);
     denom = plannedTotal;
     aheadHint = '';
   } else {
@@ -1174,7 +1220,8 @@ function renderStudyView() {
         <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
       </div>
       <div class="tap-hint" id="tap-hint">Doppeltipp zum Umdrehen</div>
-      <div class="answer-buttons" id="answer-buttons" style="display:none">
+      <div class="answer-buttons answer-buttons-5" id="answer-buttons" style="display:none">
+        <button class="btn-defer" id="btn-defer" title="Fürs Erste zurückstellen — kommt erst wieder, wenn alle anderen Karten sitzen">Später<span class="sub">zurück</span></button>
         <button class="btn-again" data-q="1">Nochmal<span class="sub">${fmtInterval(pv[1])}</span></button>
         <button class="btn-hard" data-q="3">Schwer<span class="sub">${fmtInterval(pv[3])}</span></button>
         <button class="btn-good" data-q="4">Gut<span class="sub">${fmtInterval(pv[4])}</span></button>
@@ -1204,9 +1251,10 @@ function renderStudyView() {
     lastTap = now;
   });
 
-  document.querySelectorAll('#answer-buttons button').forEach(btn => {
+  document.querySelectorAll('#answer-buttons button[data-q]').forEach(btn => {
     btn.addEventListener('click', () => rateCard(parseInt(btn.dataset.q, 10)));
   });
+  document.getElementById('btn-defer').addEventListener('click', deferCard);
 
   typesetMath();
 }
@@ -1453,15 +1501,39 @@ async function rateCard(q) {
 
   s.studiedIds.add(card.id);
   if (q === 1) s.againCount += 1; else s.goodOrBetterCount += 1;
+  if (q >= 4) s.masteredIds.add(card.id); else s.masteredIds.delete(card.id);
 
   // Die Karte wurde beim Anzeigen aus den Pools entfernt. Bleibt sie in der
   // Lernphase, kommt sie mit ihrer neuen due zurück in die Warteschlange;
-  // sonst ist sie auf Tage geplant und (falls eingeplant) "graduiert".
-  if (res.learning) {
-    s.learning.push(card);
-  } else if (wasPlanned) {
-    s.graduatedIds.add(card.id);
-  }
+  // sonst ist sie auf Tage geplant und verlässt die Sitzung.
+  if (res.learning) s.learning.push(card);
+
+  // Sind jetzt alle aktiven Karten gekonnt, evtl. zurückgestellte freigeben.
+  releaseIfReady(s);
+
+  s.current = null;
+  renderStudyView();
+}
+
+// "Später"-Button: Karte fürs Erste zurückstellen. Sie verschwindet aus der
+// Sitzung und kommt (frühestens ab der nächsten Sitzung) erst wieder, wenn alle
+// anderen Karten mindestens einmal Gut/Leicht bewertet wurden. Ändert NICHT
+// ease/interval/due — der Lernfortschritt der Karte bleibt unangetastet.
+async function deferCard() {
+  const s = currentSession;
+  if (!s || !s.current) return;
+  const card = s.current;
+
+  card.deferred = true;
+  await Store.updateCard(card);
+
+  const ai = s.activeCards.indexOf(card);
+  if (ai !== -1) s.activeCards.splice(ai, 1);
+  s.plannedIds.delete(card.id);
+  s.masteredIds.delete(card.id);
+  s.deferredThisSession.add(card.id);
+  s.deferredPool.push(card);
+  s.deferredCount += 1;
 
   s.current = null;
   renderStudyView();
@@ -1479,6 +1551,7 @@ function renderSessionSummary() {
         <div class="stat-row">
           <div class="stat"><span class="num">${s.studiedIds.size}</span><span class="label">Karten gelernt</span></div>
           <div class="stat"><span class="num">${s.againCount}</span><span class="label">Nochmal</span></div>
+          ${s.deferredCount ? `<div class="stat"><span class="num">${s.deferredCount}</span><span class="label">Zurückgestellt</span></div>` : ''}
         </div>
         ${canAhead ? `<button class="primary" id="study-ahead" style="margin-bottom:12px">Weiter vorauslernen (${s.aheadPool.length})</button>` : ''}
         <button class="${canAhead ? 'secondary' : 'primary'}" id="back-home">Zurück zur Übersicht</button>
