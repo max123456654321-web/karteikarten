@@ -847,6 +847,7 @@ async function renderHome() {
             <button class="primary" data-action="study" data-id="${deck.id}" ${cards.length === 0 ? 'disabled' : ''}>Lernen starten</button>
             <button class="secondary" data-action="browse" data-id="${deck.id}" ${cards.length === 0 ? 'disabled' : ''}>Durchsehen</button>
             <button class="secondary" data-action="study-fav" data-id="${deck.id}" ${favCount === 0 ? 'disabled' : ''}>⭐ Favoriten (${favCount})</button>
+            <button class="secondary" data-action="export" data-id="${deck.id}" ${cards.length === 0 ? 'disabled' : ''} title="Stapel mit Lernfortschritt exportieren (zum Teilen aufs andere Gerät)">⬆️ Export</button>
             <button class="delete-btn" data-action="delete" data-id="${deck.id}">Löschen</button>
           </div>
         </div>`;
@@ -858,9 +859,9 @@ async function renderHome() {
     <main>
       <div class="import-zone" id="dropzone">
         <div class="import-icon">📁</div>
-        <div>.apkg-Datei hierher ziehen</div>
+        <div>.apkg- oder Export-Datei hierher ziehen</div>
         <button class="primary" id="import-btn">Datei auswählen</button>
-        <input type="file" id="file-input" accept=".apkg">
+        <input type="file" id="file-input" accept=".apkg,.json,application/json">
       </div>
       <div class="deck-list">${deckItemsHtml}</div>
     </main>
@@ -891,6 +892,9 @@ async function renderHome() {
   });
   app.querySelectorAll('[data-action="delete"]').forEach(btn => {
     btn.addEventListener('click', () => confirmDeleteDeck(parseInt(btn.dataset.id, 10)));
+  });
+  app.querySelectorAll('[data-action="export"]').forEach(btn => {
+    btn.addEventListener('click', () => exportDeck(parseInt(btn.dataset.id, 10)));
   });
 }
 
@@ -947,8 +951,13 @@ function closeModal() {
    Import-Ablauf
    --------------------------------------------------------------------- */
 async function handleImport(file) {
-  if (!file.name.toLowerCase().endsWith('.apkg')) {
-    showToast('Bitte eine .apkg-Datei auswählen');
+  const lower = file.name.toLowerCase();
+  // Eigene Export-Datei (.json) — enthält Karten MIT Lernfortschritt/Favoriten/Später
+  if (lower.endsWith('.json')) {
+    return handleImportExport(file);
+  }
+  if (!lower.endsWith('.apkg')) {
+    showToast('Bitte eine .apkg- oder Export-Datei (.json) auswählen');
     return;
   }
   showToast('Importiere „' + file.name + '“ …');
@@ -1003,6 +1012,132 @@ async function saveImportedDeck(name, parsedCards) {
   }));
   await Store.addCards(cards);
   showToast(`„${name}“ importiert: ${cards.length} Karten`);
+  renderHome();
+}
+
+/* ---------------------------------------------------------------------
+   Export / Import MIT Lernfortschritt (gerät-zu-gerät ohne Server)
+   ---------------------------------------------------------------------
+   Die normale .apkg enthält KEINEN Lernfortschritt. "exportDeck" packt daher
+   Karten inkl. aller Fortschrittsfelder (ease/interval/reps/due/lapses/
+   firstReviewDone/mastered), Favoriten und "Später"-Status (deferred) in eine
+   eigene .json-Datei. Auf dem anderen Gerät stellt "handleImportExport" alles
+   1:1 wieder her -> gleicher Prozentstand, gleiche Favoriten, gleiche Später.
+   Hinweis: Bilder werden derzeit als geräte-lokale blob:-URLs eingebettet und
+   wandern (noch) nicht mit; reiner Text/LaTeX/MC überträgt sich vollständig.
+   --------------------------------------------------------------------- */
+const EXPORT_FORMAT = 'karteikarten-export';
+
+async function exportDeck(deckId) {
+  const deck = await Store.getDeck(deckId);
+  const cards = await Store.getCardsForDeck(deckId);
+  if (!deck || cards.length === 0) { showToast('Nichts zu exportieren'); return; }
+
+  const obj = {
+    format: EXPORT_FORMAT,
+    version: 1,
+    exportedAt: Date.now(),
+    deck: { name: deck.name, newPerDay: deck.newPerDay || 20 },
+    cards: cards.map(c => ({
+      front: c.front || '', back: c.back || '', css: c.css || '', mcData: c.mcData || null,
+      favorite: !!c.favorite,
+      ease: c.ease, interval: c.interval, reps: c.reps, lapses: c.lapses,
+      due: c.due, firstReviewDone: !!c.firstReviewDone,
+      mastered: !!c.mastered, deferred: !!c.deferred, created: c.created
+    }))
+  };
+
+  const json = JSON.stringify(obj);
+  const safeName = (deck.name || 'stapel').replace(/[^\w\-. ]+/g, '_').trim() || 'stapel';
+  const filename = safeName + '.karteikarten.json';
+  const file = new File([json], filename, { type: 'application/json' });
+
+  // iOS/iPad: natives Teilen-Menü (inkl. AirDrop) öffnen, wenn möglich.
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: deck.name });
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // Nutzer hat abgebrochen
+      // sonst: Fallback auf Download
+    }
+  }
+
+  // Fallback (Desktop u.a.): Datei herunterladen
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  showToast('Export gespeichert — teile die Datei ans andere Gerät');
+}
+
+async function handleImportExport(file) {
+  let obj;
+  try {
+    obj = JSON.parse(await file.text());
+  } catch (e) {
+    showToast('Die Datei konnte nicht gelesen werden');
+    return;
+  }
+  if (!obj || obj.format !== EXPORT_FORMAT || !Array.isArray(obj.cards)) {
+    showToast('Das ist keine gültige Karteikarten-Export-Datei');
+    return;
+  }
+
+  const deckName = (obj.deck && obj.deck.name) || file.name.replace(/(\.karteikarten)?\.json$/i, '');
+  const existing = await Store.findDeckByName(deckName);
+  if (existing) {
+    showModal({
+      title: 'Stapel existiert bereits',
+      body: `Ein Stapel namens "${escapeHtml(deckName)}" existiert schon. Überschreiben (ersetzt den Lernfortschritt hier durch den aus der Datei) oder als neuen Stapel anlegen?`,
+      actions: [
+        { label: 'Abbrechen', class: 'secondary' },
+        { label: 'Als neu anlegen', class: 'secondary', onClick: async () => {
+            closeModal();
+            await saveExportedDeck(deckName + ' (importiert)', obj);
+          } },
+        { label: 'Überschreiben', class: 'primary', onClick: async () => {
+            closeModal();
+            await Store.deleteDeck(existing.id);
+            await saveExportedDeck(deckName, obj);
+          } }
+      ]
+    });
+  } else {
+    await saveExportedDeck(deckName, obj);
+  }
+}
+
+async function saveExportedDeck(name, obj) {
+  const d = obj.deck || {};
+  const deckId = await Store.addDeck({
+    name,
+    importDate: Date.now(),
+    newPerDay: d.newPerDay || 20,
+    newIntroducedToday: 0,
+    newIntroducedDate: null
+  });
+  const now = Date.now();
+  const cards = obj.cards.map(c => ({
+    deckId,
+    front: c.front || '', back: c.back || '', css: c.css || '', mcData: c.mcData || null,
+    favorite: !!c.favorite,
+    ease: (c.ease ?? 2.5),
+    interval: (c.interval ?? 0),
+    reps: (c.reps ?? 0),
+    lapses: (c.lapses ?? 0),
+    due: (c.due ?? now),
+    firstReviewDone: !!c.firstReviewDone,
+    mastered: !!c.mastered,
+    deferred: !!c.deferred,
+    created: (c.created ?? now)
+  }));
+  await Store.addCards(cards);
+  showToast(`„${name}“ importiert: ${cards.length} Karten inkl. Lernfortschritt`);
   renderHome();
 }
 
