@@ -180,14 +180,20 @@ window.MathJax = {
     cursor: pointer;
   }
   .card-del-btn:active { transform: scale(.92); }
-  /* Schwarze "Später"-Markierung oben links (zurückgestellte Karten) — anklickbar zum Aufheben */
+  /* Schwarze "Später"-Markierung oben links (zurückgestellte Karten) — rein visuell */
   .card-defer-badge {
     position: absolute; top: 10px; left: 10px; z-index: 5;
     background: #1c1c1c; color: #fff; font-size: .72rem; font-weight: 700;
     padding: 5px 11px; border-radius: 12px; box-shadow: var(--shadow-sm);
-    letter-spacing: .02em; border: none; cursor: pointer; font-family: inherit;
+    letter-spacing: .02em;
   }
-  .card-defer-badge:active { transform: scale(.94); }
+  /* Deutlicher Knopf zum Aufheben der Zurückstellung (Einzelansicht) */
+  .browse-undefer-btn {
+    background: #1c1c1c; color: #fff; font-weight: 700; font-size: .92rem;
+    padding: 13px 16px; border-radius: 12px; margin-top: 12px; width: 100%;
+    -webkit-appearance: none; appearance: none; border: none;
+  }
+  .browse-undefer-btn:active { transform: scale(.98); background: #000; }
   .flashcard {
     background: var(--card-bg); border-radius: var(--radius);
     box-shadow: var(--shadow-lg);
@@ -290,14 +296,13 @@ window.MathJax = {
     position: absolute; top: 6px; right: 6px; background: none; border: none;
     padding: 2px; font-size: 1rem; line-height: 1; cursor: pointer; z-index: 1;
   }
-  /* Schwarze "Später"-Markierung als Chip oben links in der Kachel — anklickbar zum Aufheben */
+  /* Schwarze "Später"-Markierung als Chip oben links in der Kachel — antippen zum Aufheben */
   .tile-defer-badge {
     align-self: flex-start; background: #1c1c1c; color: #fff;
     font-size: .6rem; font-weight: 700; line-height: 1;
-    padding: 4px 7px; border-radius: 8px; letter-spacing: .02em;
-    border: none; cursor: pointer; font-family: inherit;
+    padding: 4px 7px; border-radius: 8px; letter-spacing: .02em; cursor: pointer;
   }
-  .tile-defer-badge:active { transform: scale(.94); }
+  .tile-defer-badge:active { transform: scale(.9); }
 
   .card-simplelist { display: flex; flex-direction: column; margin-top: 10px; }
   .card-row {
@@ -308,13 +313,13 @@ window.MathJax = {
   .card-row:active { background: rgba(255,255,255,.5); }
   .card-row-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .row-fav-btn { background: none; border: none; padding: 2px; font-size: 1rem; line-height: 1; cursor: pointer; flex-shrink: 0; }
-  /* Schwarze "Später"-Markierung als Chip in der Listenzeile — anklickbar zum Aufheben */
+  /* Schwarze "Später"-Markierung als Chip in der Listenzeile — antippen zum Aufheben */
   .row-defer-badge {
     flex-shrink: 0; background: #1c1c1c; color: #fff; font-size: .6rem;
     font-weight: 700; line-height: 1; padding: 4px 7px; border-radius: 8px; letter-spacing: .02em;
-    border: none; cursor: pointer; font-family: inherit;
+    cursor: pointer;
   }
-  .row-defer-badge:active { transform: scale(.94); }
+  .row-defer-badge:active { transform: scale(.9); }
   .row-del-btn {
     background: none; border: none; padding: 4px 6px; font-size: 1rem; line-height: 1;
     cursor: pointer; flex-shrink: 0; color: var(--again); opacity: .65;
@@ -1505,7 +1510,7 @@ function renderBrowseGridView() {
     return `
       <div class="card-tile" data-index="${i}">
         <button class="tile-fav-btn" data-index="${i}">${card.favorite ? '⭐' : '☆'}</button>
-        ${card.deferred ? `<button class="tile-defer-badge" data-undefer="${i}" title="Zurückstellung aufheben — Karte wieder in den Algorithmus">Später ✕</button>` : ''}
+        ${card.deferred ? `<span class="tile-defer-badge" data-undefer="${i}" title="Antippen: Zurückstellung aufheben">Später</span>` : ''}
         ${p.imgSrc ? `<div class="card-tile-img" style="background-image:url('${p.imgSrc}')"></div>` : ''}
         <div class="card-tile-text">${escapeHtml(p.text.slice(0, 90))}</div>
       </div>`;
@@ -1528,7 +1533,7 @@ function renderBrowseListView() {
     return `
       <div class="card-row" data-index="${i}">
         <button class="row-fav-btn" data-index="${i}">${card.favorite ? '⭐' : '☆'}</button>
-        ${card.deferred ? `<button class="row-defer-badge" data-undefer="${i}" title="Zurückstellung aufheben — Karte wieder in den Algorithmus">Später ✕</button>` : ''}
+        ${card.deferred ? `<span class="row-defer-badge" data-undefer="${i}" title="Antippen: Zurückstellung aufheben">Später</span>` : ''}
         <span class="card-row-text">${escapeHtml(p.text.slice(0, 100))}</span>
         <button class="row-del-btn" data-index="${i}" title="Karte löschen">🗑</button>
       </div>`;
@@ -1558,7 +1563,7 @@ function renderBrowseSingleView() {
       </div>
       <div class="card-area">
         <button class="card-fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'}</button>
-        ${card.deferred ? `<button class="card-defer-badge" id="undefer-btn" title="Zurückstellung aufheben — Karte wieder in den Algorithmus">Später ✕</button>` : ''}
+        ${card.deferred ? `<span class="card-defer-badge">Später</span>` : ''}
         <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
       </div>
       <div class="tap-hint" id="tap-hint">Doppeltipp zum Umdrehen</div>
@@ -1566,6 +1571,7 @@ function renderBrowseSingleView() {
         <button class="secondary" id="browse-prev" ${b.index === 0 ? 'disabled' : ''}>◀ Zurück</button>
         <button class="secondary" id="browse-next" ${b.index === b.cards.length - 1 ? 'disabled' : ''}>Weiter ▶</button>
       </div>
+      ${card.deferred ? `<button class="browse-undefer-btn" id="undefer-btn">↩︎ „Später"-Markierung aufheben</button>` : ''}
       <button class="browse-delete-btn" id="browse-delete">🗑 Diese Karte löschen</button>
     </main>
   `;
