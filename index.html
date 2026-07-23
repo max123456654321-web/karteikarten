@@ -171,13 +171,23 @@ window.MathJax = {
     cursor: pointer;
   }
   .card-fav-btn:active { transform: scale(.92); }
-  /* Schwarze "Später"-Markierung oben links (zurückgestellte Karten) */
+  /* Papierkorb-Knopf oben links auf der Lernkarte (löscht die aktuelle Karte) */
+  .card-del-btn {
+    position: absolute; top: 10px; left: 10px; z-index: 5;
+    width: 42px; height: 42px; border-radius: 50%; padding: 0;
+    background: rgba(255,255,255,.85); border: none; box-shadow: var(--shadow-sm);
+    font-size: 1.1rem; display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  .card-del-btn:active { transform: scale(.92); }
+  /* Schwarze "Später"-Markierung oben links (zurückgestellte Karten) — anklickbar zum Aufheben */
   .card-defer-badge {
     position: absolute; top: 10px; left: 10px; z-index: 5;
     background: #1c1c1c; color: #fff; font-size: .72rem; font-weight: 700;
     padding: 5px 11px; border-radius: 12px; box-shadow: var(--shadow-sm);
-    letter-spacing: .02em;
+    letter-spacing: .02em; border: none; cursor: pointer; font-family: inherit;
   }
+  .card-defer-badge:active { transform: scale(.94); }
   .flashcard {
     background: var(--card-bg); border-radius: var(--radius);
     box-shadow: var(--shadow-lg);
@@ -280,12 +290,14 @@ window.MathJax = {
     position: absolute; top: 6px; right: 6px; background: none; border: none;
     padding: 2px; font-size: 1rem; line-height: 1; cursor: pointer; z-index: 1;
   }
-  /* Schwarze "Später"-Markierung als Chip oben links in der Kachel */
+  /* Schwarze "Später"-Markierung als Chip oben links in der Kachel — anklickbar zum Aufheben */
   .tile-defer-badge {
     align-self: flex-start; background: #1c1c1c; color: #fff;
     font-size: .6rem; font-weight: 700; line-height: 1;
-    padding: 3px 7px; border-radius: 8px; letter-spacing: .02em;
+    padding: 4px 7px; border-radius: 8px; letter-spacing: .02em;
+    border: none; cursor: pointer; font-family: inherit;
   }
+  .tile-defer-badge:active { transform: scale(.94); }
 
   .card-simplelist { display: flex; flex-direction: column; margin-top: 10px; }
   .card-row {
@@ -296,11 +308,13 @@ window.MathJax = {
   .card-row:active { background: rgba(255,255,255,.5); }
   .card-row-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .row-fav-btn { background: none; border: none; padding: 2px; font-size: 1rem; line-height: 1; cursor: pointer; flex-shrink: 0; }
-  /* Schwarze "Später"-Markierung als Chip in der Listenzeile */
+  /* Schwarze "Später"-Markierung als Chip in der Listenzeile — anklickbar zum Aufheben */
   .row-defer-badge {
     flex-shrink: 0; background: #1c1c1c; color: #fff; font-size: .6rem;
-    font-weight: 700; line-height: 1; padding: 3px 7px; border-radius: 8px; letter-spacing: .02em;
+    font-weight: 700; line-height: 1; padding: 4px 7px; border-radius: 8px; letter-spacing: .02em;
+    border: none; cursor: pointer; font-family: inherit;
   }
+  .row-defer-badge:active { transform: scale(.94); }
   .row-del-btn {
     background: none; border: none; padding: 4px 6px; font-size: 1rem; line-height: 1;
     cursor: pointer; flex-shrink: 0; color: var(--again); opacity: .65;
@@ -1248,6 +1262,7 @@ function renderStudyView() {
         <div class="progress-count">${doneCount} / ${denom}${aheadHint}</div>
       </div>
       <div class="card-area">
+        <button class="card-del-btn" id="card-del" title="Diese Karte dauerhaft löschen">🗑</button>
         <button class="card-fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'}</button>
         <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
       </div>
@@ -1266,6 +1281,8 @@ function renderStudyView() {
     currentSession = null;
     renderHome();
   });
+
+  document.getElementById('card-del').addEventListener('click', confirmDeleteCurrentStudyCard);
 
   document.getElementById('fav-toggle').addEventListener('click', async () => {
     card.favorite = !card.favorite;
@@ -1424,6 +1441,29 @@ function wireCardPreviewInteractions(itemSelector) {
       confirmDeleteCard(browseSession.cards[idx]);
     });
   });
+  // "Später"-Chip in Kachel/Liste: Klick hebt die Zurückstellung auf (springt
+  // nicht in die Einzelansicht) — Karte kommt sofort wieder in den Algorithmus.
+  document.querySelectorAll('[data-undefer]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.undefer, 10);
+      undeferCard(browseSession.cards[idx]);
+    });
+  });
+}
+
+// Hebt die "Später"-Zurückstellung einer Karte manuell auf: nimmt sie wieder
+// ganz normal in den Algorithmus auf und macht sie sofort fällig (due = jetzt),
+// damit sie in der nächsten Lern-Sitzung gleich wieder drankommt. Ändert sonst
+// nichts am Lernfortschritt (ease/interval/reps bleiben). Speichert direkt in
+// IndexedDB — kein Neu-Import nötig, gilt für bestehende Stapel.
+async function undeferCard(card) {
+  if (!card || !card.deferred) return;
+  card.deferred = false;
+  card.due = Date.now();
+  await Store.updateCard(card);
+  showToast('Zurückstellung aufgehoben — Karte ist wieder im Algorithmus');
+  renderBrowseView();
 }
 
 // Löscht eine einzelne Karte dauerhaft aus dem Stapel (IndexedDB) — nach
@@ -1465,7 +1505,7 @@ function renderBrowseGridView() {
     return `
       <div class="card-tile" data-index="${i}">
         <button class="tile-fav-btn" data-index="${i}">${card.favorite ? '⭐' : '☆'}</button>
-        ${card.deferred ? '<span class="tile-defer-badge">Später</span>' : ''}
+        ${card.deferred ? `<button class="tile-defer-badge" data-undefer="${i}" title="Zurückstellung aufheben — Karte wieder in den Algorithmus">Später ✕</button>` : ''}
         ${p.imgSrc ? `<div class="card-tile-img" style="background-image:url('${p.imgSrc}')"></div>` : ''}
         <div class="card-tile-text">${escapeHtml(p.text.slice(0, 90))}</div>
       </div>`;
@@ -1488,7 +1528,7 @@ function renderBrowseListView() {
     return `
       <div class="card-row" data-index="${i}">
         <button class="row-fav-btn" data-index="${i}">${card.favorite ? '⭐' : '☆'}</button>
-        ${card.deferred ? '<span class="row-defer-badge">Später</span>' : ''}
+        ${card.deferred ? `<button class="row-defer-badge" data-undefer="${i}" title="Zurückstellung aufheben — Karte wieder in den Algorithmus">Später ✕</button>` : ''}
         <span class="card-row-text">${escapeHtml(p.text.slice(0, 100))}</span>
         <button class="row-del-btn" data-index="${i}" title="Karte löschen">🗑</button>
       </div>`;
@@ -1518,7 +1558,7 @@ function renderBrowseSingleView() {
       </div>
       <div class="card-area">
         <button class="card-fav-btn" id="fav-toggle">${card.favorite ? '⭐' : '☆'}</button>
-        ${card.deferred ? '<span class="card-defer-badge">Später</span>' : ''}
+        ${card.deferred ? `<button class="card-defer-badge" id="undefer-btn" title="Zurückstellung aufheben — Karte wieder in den Algorithmus">Später ✕</button>` : ''}
         <div class="flashcard" id="flashcard">${flashcardMarkup(card)}</div>
       </div>
       <div class="tap-hint" id="tap-hint">Doppeltipp zum Umdrehen</div>
@@ -1532,6 +1572,8 @@ function renderBrowseSingleView() {
 
   wireBrowseHeader();
   document.getElementById('browse-delete').addEventListener('click', () => confirmDeleteCard(card));
+  const undeferBtn = document.getElementById('undefer-btn');
+  if (undeferBtn) undeferBtn.addEventListener('click', () => undeferCard(card));
   document.getElementById('fav-toggle').addEventListener('click', async () => {
     card.favorite = !card.favorite;
     await Store.updateCard(card);
@@ -1615,6 +1657,44 @@ async function deferCard() {
 
   s.current = null;
   renderStudyView();
+}
+
+// Entfernt eine Karte vollständig aus der laufenden Lern-Sitzung (alle Pools und
+// Zähler-Sets), z.B. nach dem Löschen. Verändert die DB NICHT.
+function removeCardFromSession(s, card) {
+  removeFromPools(s, card);
+  [s.deferredPool, s.activeCards].forEach(arr => {
+    const i = arr.indexOf(card);
+    if (i !== -1) arr.splice(i, 1);
+  });
+  s.plannedIds.delete(card.id);
+  s.masteredIds.delete(card.id);
+  s.studiedIds.delete(card.id);
+  s.deferredThisSession.delete(card.id);
+}
+
+// Löscht die aktuell in der Lern-Sitzung angezeigte Karte dauerhaft (nach
+// Bestätigung) — direkt im Algorithmus, ohne Umweg über "Durchsehen". Der
+// Lernfortschritt aller anderen Karten bleibt erhalten; kein Neu-Import nötig.
+function confirmDeleteCurrentStudyCard() {
+  const s = currentSession;
+  if (!s || !s.current) return;
+  const card = s.current;
+  showModal({
+    title: 'Karte löschen?',
+    body: 'Diese Karte wird <b>dauerhaft</b> aus dem Stapel entfernt. Der Lernfortschritt aller anderen Karten bleibt erhalten.',
+    actions: [
+      { label: 'Abbrechen', class: 'secondary' },
+      { label: 'Löschen', class: 'primary', danger: true, onClick: async () => {
+          await Store.deleteCard(card.id);
+          closeModal();
+          removeCardFromSession(s, card);
+          s.current = null;
+          showToast('Karte gelöscht');
+          renderStudyView();
+        } }
+    ]
+  });
 }
 
 function renderSessionSummary() {
