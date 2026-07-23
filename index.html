@@ -1591,11 +1591,6 @@ function renderBrowseSingleView() {
   document.getElementById('browse-next').addEventListener('click', () => {
     if (browseSession.index < browseSession.cards.length - 1) { browseSession.index++; renderBrowseView(); }
   });
-  document.getElementById('fav-toggle').addEventListener('click', async () => {
-    card.favorite = !card.favorite;
-    await Store.updateCard(card);
-    document.getElementById('fav-toggle').textContent = (card.favorite ? '⭐' : '☆') + ' Favorit';
-  });
 
   const flashcard = document.getElementById('flashcard');
   let lastTap = 0;
