@@ -861,7 +861,7 @@ async function renderHome() {
         <div class="import-icon">📁</div>
         <div>.apkg- oder Export-Datei hierher ziehen</div>
         <button class="primary" id="import-btn">Datei auswählen</button>
-        <input type="file" id="file-input" accept=".apkg,.json,application/json">
+        <input type="file" id="file-input">
       </div>
       <div class="deck-list">${deckItemsHtml}</div>
     </main>
@@ -869,6 +869,13 @@ async function renderHome() {
 
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
+  // iOS/iPadOS: KEIN accept setzen. Safari übersetzt accept in UTIs — ".apkg" kennt es
+  // nicht und verwirft es, "application/json" wird zu "public.json". Ergebnis: der
+  // Dateien-Picker zeigt nur noch JSON, .apkg ist ausgegraut. Ohne accept ist alles
+  // wählbar; die Prüfung passiert ohnehin in handleImport().
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  if (!isIOS) fileInput.accept = '.apkg,.json,application/json';
   document.getElementById('import-btn').addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', (e) => {
     if (e.target.files.length) handleImport(e.target.files[0]);
