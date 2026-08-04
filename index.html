@@ -8,7 +8,20 @@
 <link rel="apple-touch-icon" href="icon.svg">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="theme-color" content="#f7f5f2">
+<meta name="theme-color" content="#f7f5f2" id="theme-color-meta">
+
+<!-- Design (hell/dunkel) SOFORT setzen, noch bevor etwas gezeichnet wird —
+     sonst blitzt beim Start kurz die helle Oberfläche auf. -->
+<script>
+(function () {
+  try {
+    var pref = localStorage.getItem('karteikarten-theme') || 'auto';
+    var dark = pref === 'dark' ||
+      (pref === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  } catch (e) { /* localStorage gesperrt: bleibt hell */ }
+})();
+</script>
 
 <!-- MathJax: Formeln in \( \), \[ \] und $$ $$ erkennen -->
 <script>
@@ -47,6 +60,65 @@ window.MathJax = {
     --shadow-md: 0 8px 24px rgba(107, 90, 58, .12), 0 2px 6px rgba(107, 90, 58, .08);
     --shadow-lg: 0 16px 40px rgba(107, 90, 58, .16), 0 4px 12px rgba(107, 90, 58, .1);
   }
+
+  /* ---------- Dark Mode ----------
+     Umschaltbar über die Einstellungen (⚙️ auf der Startseite): Automatisch,
+     Hell oder Dunkel. Gesetzt wird data-theme="dark" am <html>-Element; das
+     Layout bleibt exakt gleich, nur die Farben ändern sich.
+     Karteninhalte aus Anki bringen oft eigene Farben mit (Notiztyp-CSS und
+     Inline-Styles) — die werden zusätzlich in JS lesbar gemacht, siehe
+     stripColorDeclarations() und adaptCardForDark(). */
+  html[data-theme="dark"] {
+    --bg-a: #1a1815;
+    --bg-b: #121110;
+    --card-bg: #24211b;
+    --ink: #ece6da;
+    --ink-soft: #a29886;
+    --accent: #cba875;
+    --accent-soft: #3b3325;
+    --accent-dark: #e7cd9a;
+    --line: #37312a;
+    --again: #e0796a;
+    --hard: #e0ac5c;
+    --good: #6bb388;
+    --easy: #6098c4;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .5);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, .55);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, .6);
+  }
+  /* Stellen, an denen im hellen Design fest weiße/helle Werte stehen */
+  html[data-theme="dark"] header.topbar .back-btn,
+  html[data-theme="dark"] .icon-btn { background: rgba(255,255,255,.07); color: var(--ink); }
+  html[data-theme="dark"] header.topbar .back-btn { color: var(--accent-dark); }
+  html[data-theme="dark"] header.topbar .back-btn:active,
+  html[data-theme="dark"] .icon-btn:active { background: rgba(255,255,255,.15); }
+  html[data-theme="dark"] .import-zone { background: rgba(255,255,255,.03); }
+  html[data-theme="dark"] .import-zone.dragover { background: rgba(255,255,255,.08); }
+  html[data-theme="dark"] button.primary {
+    background: linear-gradient(135deg, #d9b87a, #b08d5a); color: #231f17;
+  }
+  html[data-theme="dark"] button.secondary:active { background: #453d32; }
+  html[data-theme="dark"] .deck-card .deck-icon { background: linear-gradient(135deg, #3b3325, #2c2820); }
+  html[data-theme="dark"] .progress-bar-track { background: rgba(255,255,255,.08); }
+  html[data-theme="dark"] .card-fav-btn,
+  html[data-theme="dark"] .card-del-btn { background: rgba(255,255,255,.11); color: var(--ink); }
+  html[data-theme="dark"] .mode-btn { background: rgba(255,255,255,.07); color: var(--ink); }
+  html[data-theme="dark"] .mode-btn.active { background: var(--accent-soft); }
+  html[data-theme="dark"] .card-row:active { background: rgba(255,255,255,.05); }
+  html[data-theme="dark"] .modal-overlay { background: rgba(0,0,0,.62); }
+  html[data-theme="dark"] .modal-box { background: var(--card-bg); }
+  html[data-theme="dark"] .toast { background: #3a332a; color: var(--ink); }
+  /* Schwarze "Später"-Elemente brauchen auf dunklem Grund eine Kante */
+  html[data-theme="dark"] .card-defer-badge,
+  html[data-theme="dark"] .tile-defer-badge,
+  html[data-theme="dark"] .row-defer-badge,
+  html[data-theme="dark"] .browse-undefer-btn,
+  html[data-theme="dark"] .undefer-all-btn { background: #101010; border: 1px solid rgba(255,255,255,.32); }
+  html[data-theme="dark"] .answer-buttons .btn-defer { background: linear-gradient(135deg, #6e6e6e, #3a3a3a); }
+  /* Anki-Bilder sind häufig freigestellte PNGs mit schwarzen Linien — auf
+     dunklem Grund wären sie unsichtbar. Deshalb weiße Unterlage. */
+  html[data-theme="dark"] .anki-card-scope img,
+  html[data-theme="dark"] .flashcard img { background: #fff; padding: 4px; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
     margin: 0; padding: 0; height: 100%;
@@ -78,6 +150,13 @@ window.MathJax = {
     transition: background .15s, transform .1s;
   }
   header.topbar .back-btn:active { background: rgba(255,255,255,.9); transform: scale(.97); }
+  .icon-btn {
+    background: rgba(255,255,255,.6); border: none; border-radius: 12px;
+    padding: 9px 12px; font-size: 1.15rem; line-height: 1; cursor: pointer;
+    transition: background .15s, transform .1s;
+    -webkit-appearance: none; appearance: none; /* iOS: sonst native Button-Darstellung */
+  }
+  .icon-btn:active { background: rgba(255,255,255,.9); transform: scale(.94); }
 
   main { flex: 1; padding: 0 20px 40px; max-width: 720px; margin: 0 auto; width: 100%; }
 
@@ -295,6 +374,7 @@ window.MathJax = {
   .tile-fav-btn {
     position: absolute; top: 6px; right: 6px; background: none; border: none;
     padding: 2px; font-size: 1rem; line-height: 1; cursor: pointer; z-index: 1;
+    color: var(--ink); /* sonst Button-Schwarz -> leerer Stern im Dark Mode unsichtbar */
   }
   /* Schwarze "Später"-Markierung als Chip oben links in der Kachel — antippen zum Aufheben */
   .tile-defer-badge {
@@ -312,7 +392,10 @@ window.MathJax = {
   }
   .card-row:active { background: rgba(255,255,255,.5); }
   .card-row-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-  .row-fav-btn { background: none; border: none; padding: 2px; font-size: 1rem; line-height: 1; cursor: pointer; flex-shrink: 0; }
+  .row-fav-btn {
+    background: none; border: none; padding: 2px; font-size: 1rem; line-height: 1;
+    cursor: pointer; flex-shrink: 0; color: var(--ink);
+  }
   /* Schwarze "Später"-Markierung als Chip in der Listenzeile — antippen zum Aufheben */
   .row-defer-badge {
     flex-shrink: 0; background: #1c1c1c; color: #fff; font-size: .6rem;
@@ -350,6 +433,41 @@ window.MathJax = {
   }
   .modal-box h3 { margin-top: 0; }
   .modal-box .modal-actions { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; }
+
+  /* ---------- Einstellungen (Schalter) ---------- */
+  .setting-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 14px 0; border-bottom: 1px solid var(--line);
+  }
+  .setting-row:last-child { border-bottom: none; }
+  .setting-text { min-width: 0; }
+  .setting-label { font-weight: 700; }
+  .setting-desc { color: var(--ink-soft); font-size: .82rem; margin-top: 3px; line-height: 1.35; }
+  .switch {
+    position: relative; flex-shrink: 0; width: 54px; height: 31px; padding: 0;
+    background: var(--line); border: none; border-radius: 16px; cursor: pointer;
+    transition: background .18s;
+    /* iOS/iPad: ohne appearance:none überdeckt die native Button-Darstellung
+       Hintergrund und Schieber (siehe Badge-Bug in einem früheren Update). */
+    -webkit-appearance: none; appearance: none;
+  }
+  .switch::after {
+    content: ''; position: absolute; top: 3px; left: 3px; width: 25px; height: 25px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    transition: transform .18s;
+  }
+  .switch.on { background: var(--good); }
+  .switch.on::after { transform: translateX(23px); }
+  .switch:disabled { opacity: .4; cursor: default; }
+
+  /* ---------- Werkzeugleiste in Kachel-/Listenansicht ---------- */
+  .browse-toolbar { display: flex; justify-content: flex-end; margin: 6px 0 2px; }
+  .undefer-all-btn {
+    background: #1c1c1c; color: #fff; font-weight: 700; font-size: .85rem;
+    padding: 11px 15px; border-radius: 12px; border: none;
+    -webkit-appearance: none; appearance: none;
+  }
+  .undefer-all-btn:active { transform: scale(.97); background: #000; }
 
   .toast {
     position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
@@ -802,6 +920,199 @@ function computeDeckStats(cards, deck) {
 }
 
 /* ---------------------------------------------------------------------
+   Design / Dark Mode
+   ---------------------------------------------------------------------
+   Drei Einstellungen, gespeichert in localStorage:
+     'auto'  = folgt der Systemeinstellung des Geräts (Standard)
+     'light' = immer hell
+     'dark'  = immer dunkel
+   Gesetzt wird data-theme am <html>; das eigentliche Umfärben macht CSS.
+   Karteninhalte werden zusätzlich behandelt (siehe adaptCardForDark), damit
+   dunkler Text aus Anki-Notiztypen im Dark Mode nicht unsichtbar wird.
+   --------------------------------------------------------------------- */
+const THEME_KEY = 'karteikarten-theme';
+const darkMediaQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+function getThemePref() {
+  try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) { return 'auto'; }
+}
+function setThemePref(pref) {
+  try { localStorage.setItem(THEME_KEY, pref); } catch (e) { /* privater Modus: gilt nur für diese Sitzung */ }
+  applyTheme();
+}
+function systemPrefersDark() {
+  return !!(darkMediaQuery && darkMediaQuery.matches);
+}
+function effectiveTheme() {
+  const pref = getThemePref();
+  return pref === 'auto' ? (systemPrefersDark() ? 'dark' : 'light') : pref;
+}
+function isDarkMode() {
+  return document.documentElement.getAttribute('data-theme') === 'dark';
+}
+function applyTheme() {
+  const theme = effectiveTheme();
+  document.documentElement.setAttribute('data-theme', theme);
+  const meta = document.getElementById('theme-color-meta');
+  if (meta) meta.setAttribute('content', theme === 'dark' ? '#1a1815' : '#f7f5f2');
+  // Ist gerade eine Karte zu sehen, muss sie komplett neu gezeichnet werden:
+  // die Notiztyp-CSS wird erst beim Zeichnen ans Design angepasst.
+  if (document.getElementById('flashcard')) renderCurrentCardView();
+}
+// Zeichnet die gerade sichtbare Kartenansicht neu (Durchsehen oder Lernen).
+function renderCurrentCardView() {
+  if (browseSession) renderBrowseView();
+  else if (currentSession && currentSession.current) renderStudyView();
+}
+if (darkMediaQuery && darkMediaQuery.addEventListener) {
+  darkMediaQuery.addEventListener('change', () => { if (getThemePref() === 'auto') applyTheme(); });
+}
+
+function openSettings() {
+  const pref = getThemePref();
+  const dark = effectiveTheme() === 'dark';
+  const auto = pref === 'auto';
+  showModal({
+    title: '⚙️ Einstellungen',
+    body: `
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="setting-label">🌙 Dark Mode</div>
+          <div class="setting-desc">Dunkle Oberfläche fürs Lernen am Abend — schont die Augen.</div>
+        </div>
+        <button class="switch ${dark ? 'on' : ''}" id="switch-dark" ${auto ? 'disabled' : ''} aria-label="Dark Mode"></button>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="setting-label">Automatisch</div>
+          <div class="setting-desc">Folgt der Einstellung des Geräts (hell am Tag, dunkel in der Nacht).</div>
+        </div>
+        <button class="switch ${auto ? 'on' : ''}" id="switch-auto" aria-label="Automatisch"></button>
+      </div>`,
+    actions: [{ label: 'Fertig', class: 'primary' }]
+  });
+
+  const darkSwitch = document.getElementById('switch-dark');
+  const autoSwitch = document.getElementById('switch-auto');
+
+  function refresh() {
+    const nowAuto = getThemePref() === 'auto';
+    const nowDark = effectiveTheme() === 'dark';
+    darkSwitch.classList.toggle('on', nowDark);
+    darkSwitch.disabled = nowAuto;
+    autoSwitch.classList.toggle('on', nowAuto);
+  }
+
+  darkSwitch.addEventListener('click', () => {
+    if (darkSwitch.disabled) return;
+    setThemePref(effectiveTheme() === 'dark' ? 'light' : 'dark');
+    refresh();
+  });
+  autoSwitch.addEventListener('click', () => {
+    // Automatik aus: aktuellen Zustand als feste Wahl übernehmen
+    setThemePref(getThemePref() === 'auto' ? (systemPrefersDark() ? 'dark' : 'light') : 'auto');
+    refresh();
+  });
+}
+
+/* ---------------------------------------------------------------------
+   Karteninhalte im Dark Mode lesbar halten
+   ---------------------------------------------------------------------
+   Anki-Karten bringen zwei eigene Farbquellen mit:
+   1. die CSS des Notiztyps (z.B. "background: white; color: black") —
+      Hintergrund-Angaben werden im Dark Mode entfernt (sonst leuchtet die
+      Karte weiß), dunkle Schriftfarben werden aufgehellt statt verworfen,
+      damit z.B. rote Hinweise rot bleiben (stripColorDeclarations).
+   2. Inline-Styles im Karten-HTML (style="color:#000", <font color>) —
+      die werden nach dem Zeichnen geprüft und nur dann aufgehellt, wenn der
+      Text sonst zu dunkel für den dunklen Kartenhintergrund wäre
+      (adaptCardForDark). Elemente mit eigenem hellem Hintergrund (z.B. weiße
+      Boxen oder Bilder) bleiben unangetastet — dort ist dunkler Text richtig.
+   --------------------------------------------------------------------- */
+function stripColorDeclarations(css) {
+  if (!css) return '';
+  return css.replace(/([^{}]+)\{([^{}]*)\}/g, (match, selectorPart, body) => {
+    if (selectorPart.trim().startsWith('@')) return match;
+    const kept = body.split(';').map(decl => {
+      if (/^\s*(background|background-color|background-image)\s*:/i.test(decl)) return null;
+      const colorMatch = /^(\s*color\s*:\s*)(.+)$/i.exec(decl);
+      if (colorMatch) {
+        const c = resolveCssColor(colorMatch[2].replace(/!important/i, '').trim());
+        if (!c) return null;                                   // unlesbarer Wert: lieber erben
+        if (relLuminance(c) >= .45) return decl;                // schon hell genug
+        return colorMatch[1] + lightenTextColor(c);
+      }
+      return decl;
+    }).filter(d => d !== null).join(';');
+    return `${selectorPart}{${kept}}`;
+  });
+}
+
+// Wandelt eine beliebige CSS-Farbangabe ("black", "#333", "rgb(...)", "hsl(...)")
+// in RGB-Werte um. Der Canvas normalisiert dabei alle Schreibweisen für uns.
+const colorProbe = document.createElement('canvas').getContext('2d');
+function resolveCssColor(str) {
+  if (!str) return null;
+  colorProbe.fillStyle = '#000000';
+  colorProbe.fillStyle = str;
+  const first = colorProbe.fillStyle;
+  colorProbe.fillStyle = '#ffffff';
+  colorProbe.fillStyle = str;
+  // Ungültige Angaben lassen fillStyle unverändert -> zwei verschiedene Ergebnisse
+  if (first !== colorProbe.fillStyle) return null;
+  return parseCssColor(first);
+}
+
+function parseCssColor(str) {
+  if (!str) return null;
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(str.trim());
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16), a: 1 };
+  }
+  const m = /rgba?\(([^)]+)\)/.exec(str);
+  if (!m) return null;
+  const p = m[1].split(/[,\s/]+/).filter(Boolean).map(v => parseFloat(v));
+  if (p.length < 3 || p.some(v => isNaN(v))) return null;
+  return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+}
+function relLuminance(c) {
+  return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
+}
+// Dunkle Textfarbe -> heller machen. Neutrales Schwarz/Grau wird zur normalen
+// Schriftfarbe der App, farbige Töne behalten ihren Farbton.
+function lightenTextColor(c) {
+  const r = c.r / 255, g = c.g / 255, b = c.b / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  const l = (max + min) / 2;
+  if (d < .08) return 'var(--ink)';                     // praktisch grau/schwarz
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h = Math.round(h * 60); if (h < 0) h += 360;
+  return `hsl(${h}, ${Math.round(Math.min(1, s * 1.1) * 100)}%, 72%)`;
+}
+
+function adaptCardForDark(root) {
+  if (!root || !isDarkMode()) return;
+  root.querySelectorAll('*').forEach(el => {
+    const tag = el.tagName;
+    if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'IMG' || tag === 'BR') return;
+    // Innerhalb einer hellen Box (eigener heller Hintergrund) nichts ändern
+    if (el.closest('[data-light-island]')) return;
+    const cs = getComputedStyle(el);
+    const bg = parseCssColor(cs.backgroundColor);
+    if (bg && bg.a > .5 && relLuminance(bg) > .5) { el.setAttribute('data-light-island', ''); return; }
+    const col = parseCssColor(cs.color);
+    if (!col || col.a < .1) return;
+    if (relLuminance(col) < .45) el.style.color = lightenTextColor(col);
+  });
+}
+
+/* ---------------------------------------------------------------------
    UI: Router / Views
    --------------------------------------------------------------------- */
 const app = document.getElementById('app');
@@ -855,7 +1166,10 @@ async function renderHome() {
   }
 
   app.innerHTML = `
-    <header class="topbar"><h1><span class="logo-dot"></span>Karteikarten</h1></header>
+    <header class="topbar">
+      <h1><span class="logo-dot"></span>Karteikarten</h1>
+      <button class="icon-btn" id="open-settings" title="Einstellungen">⚙️</button>
+    </header>
     <main>
       <div class="import-zone" id="dropzone">
         <div class="import-icon">📁</div>
@@ -866,6 +1180,8 @@ async function renderHome() {
       <div class="deck-list">${deckItemsHtml}</div>
     </main>
   `;
+
+  document.getElementById('open-settings').addEventListener('click', openSettings);
 
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
@@ -1279,7 +1595,11 @@ function flashcardMarkup(card) {
       </div>
     `;
   }
-  const scopedCss = scopeCss(card.css || '', 'anki-card-scope');
+  // Im Dark Mode werden die Farb-/Hintergrundangaben des Notiztyps entfernt,
+  // damit der Kartentext die helle Schriftfarbe der App erbt statt schwarz auf
+  // dunkel zu stehen. Layout, Abstände und Schriftgrößen bleiben erhalten.
+  let scopedCss = scopeCss(card.css || '', 'anki-card-scope');
+  if (isDarkMode()) scopedCss = stripColorDeclarations(scopedCss);
   return `
     <style>${scopedCss}</style>
     <div id="card-front-wrap">
@@ -1452,6 +1772,7 @@ function renderStudyView() {
   });
   document.getElementById('btn-defer').addEventListener('click', deferCard);
 
+  adaptCardForDark(flashcard);
   typesetMath();
 }
 
@@ -1613,6 +1934,69 @@ async function undeferCard(card) {
   renderBrowseView();
 }
 
+/* ---------------------------------------------------------------------
+   Alle "Später"-Markierungen eines Stapels auf einmal aufheben
+   ---------------------------------------------------------------------
+   Der Knopf erscheint in Kachel- und Listenansicht, sobald mindestens eine
+   zurückgestellte Karte sichtbar ist. Er wirkt auf den GANZEN Stapel (nicht
+   nur auf die gerade angezeigten Karten) — deshalb wird vor dem Ändern noch
+   einmal frisch aus der Datenbank gelesen. Der Lernfortschritt bleibt
+   unangetastet, die Karten werden nur sofort wieder fällig gestellt.
+   --------------------------------------------------------------------- */
+function undeferAllToolbarHtml() {
+  const b = browseSession;
+  const visibleDeferred = b ? b.cards.filter(c => c.deferred).length : 0;
+  if (!visibleDeferred) return '';
+  return `
+    <div class="browse-toolbar">
+      <button class="undefer-all-btn" id="undefer-all" title="Zurückstellung aller Karten in diesem Stapel aufheben">
+        ↩︎ Alle „Später“ aufheben (${visibleDeferred})
+      </button>
+    </div>`;
+}
+
+function wireUndeferAllButton() {
+  const btn = document.getElementById('undefer-all');
+  if (btn) btn.addEventListener('click', confirmUndeferAll);
+}
+
+async function confirmUndeferAll() {
+  const b = browseSession;
+  if (!b) return;
+  const allCards = await Store.getCardsForDeck(b.deck.id);
+  const deferred = allCards.filter(c => c.deferred);
+  if (!deferred.length) {
+    showToast('Keine zurückgestellten Karten in diesem Stapel');
+    renderBrowseView();
+    return;
+  }
+  showModal({
+    title: 'Alle „Später“ aufheben?',
+    body: `Bei <b>${deferred.length}</b> Karte${deferred.length === 1 ? '' : 'n'} im Stapel „${escapeHtml(b.deck.name)}“ wird die Zurückstellung aufgehoben. Sie kommen sofort wieder im Lern-Algorithmus dran. Der Lernfortschritt bleibt erhalten.`,
+    actions: [
+      { label: 'Abbrechen', class: 'secondary' },
+      { label: 'Alle aufheben', class: 'primary', onClick: async () => {
+          const now = Date.now();
+          const freedIds = new Set();
+          for (const card of deferred) {
+            card.deferred = false;
+            card.due = now;
+            await Store.updateCard(card);
+            freedIds.add(card.id);
+          }
+          // Die Karten der laufenden Durchsehen-Sitzung sind eigene Objekte
+          // (frisch aus der DB geladen) — hier nachziehen, damit die Ansicht stimmt.
+          b.cards.forEach(c => {
+            if (freedIds.has(c.id)) { c.deferred = false; c.due = now; }
+          });
+          closeModal();
+          showToast(`${deferred.length} Zurückstellung${deferred.length === 1 ? '' : 'en'} aufgehoben`);
+          renderBrowseView();
+        } }
+    ]
+  });
+}
+
 // Löscht eine einzelne Karte dauerhaft aus dem Stapel (IndexedDB) — nach
 // Bestätigung. Der Lernfortschritt der übrigen Karten bleibt unangetastet;
 // kein Neu-Import nötig. Danach wird die Karte auch aus der laufenden
@@ -1661,10 +2045,12 @@ function renderBrowseGridView() {
   app.innerHTML = `
     ${browseHeaderHtml('grid')}
     <main>
+      ${undeferAllToolbarHtml()}
       <div class="card-grid">${tilesHtml}</div>
     </main>
   `;
   wireBrowseHeader();
+  wireUndeferAllButton();
   wireCardPreviewInteractions('.card-tile');
 }
 
@@ -1684,10 +2070,12 @@ function renderBrowseListView() {
   app.innerHTML = `
     ${browseHeaderHtml('list')}
     <main>
+      ${undeferAllToolbarHtml()}
       <div class="card-simplelist">${rowsHtml}</div>
     </main>
   `;
   wireBrowseHeader();
+  wireUndeferAllButton();
   wireCardPreviewInteractions('.card-row');
 }
 
@@ -1742,6 +2130,7 @@ function renderBrowseSingleView() {
     lastTap = now;
   });
 
+  adaptCardForDark(flashcard);
   typesetMath();
 }
 
@@ -1875,6 +2264,7 @@ function renderSessionSummary() {
 /* ---------------------------------------------------------------------
    Start
    --------------------------------------------------------------------- */
+applyTheme();
 renderHome();
 </script>
 </body>
