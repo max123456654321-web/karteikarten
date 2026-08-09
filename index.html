@@ -120,16 +120,37 @@ window.MathJax = {
   html[data-theme="dark"] .anki-card-scope img,
   html[data-theme="dark"] .flashcard img { background: #fff; padding: 4px; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  /* Keine Textauswahl in der ganzen App. Auf dem iPad markierte der aufliegende
+     Handballen beim Zeichnen sonst blau ganze Absätze (iOS hält das für einen
+     Auswahl-Zieh-Vorgang), und die Lupe/das Kopieren-Menü ploppte auf.
+     Herauskopiert wird aus dieser App nie etwas — nur Eingabefelder bleiben
+     ausgenommen, sonst könnte man dort nicht mehr sinnvoll tippen. */
+  html, body, #app {
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
+  input, textarea, [contenteditable] {
+    -webkit-user-select: text; user-select: text;
+  }
   html, body {
     margin: 0; padding: 0; height: 100%;
-    background: linear-gradient(160deg, var(--bg-a) 0%, var(--bg-b) 100%);
-    background-attachment: fixed;
+    background: var(--bg-a);
     color: var(--ink);
     font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
     overscroll-behavior: none;
     -webkit-font-smoothing: antialiased;
   }
-  #app { min-height: 100%; display: flex; flex-direction: column; }
+  /* Der Hintergrundverlauf liegt auf einer eigenen, fest positionierten Ebene
+     statt als `background-attachment: fixed` auf dem body. Ein fixierter
+     Hintergrund muss auf iOS bei JEDEM Scroll-Bild neu gezeichnet werden und
+     ist dort eine der Hauptursachen für ruckeliges Scrollen; als eigene Ebene
+     schiebt der Compositor ihn einfach mit. Sieht identisch aus. */
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background: linear-gradient(160deg, var(--bg-a) 0%, var(--bg-b) 100%);
+  }
+  /* liegt über der Verlaufs-Ebene body::before */
+  #app { min-height: 100%; display: flex; flex-direction: column; position: relative; z-index: 1; }
 
   header.topbar {
     padding: 24px 24px 14px;
@@ -522,6 +543,11 @@ window.MathJax = {
     aspect-ratio: 4 / 3;
     background: #fdfcf9; border: 1px solid var(--line); border-radius: 14px;
     overflow: hidden;
+    /* Eigene Compositing-Ebene: Die große Zeichenfläche (Canvas + bis zu drei
+       Bildebenen, rund beschnitten) muss beim Scrollen sonst jedes Bild neu
+       gezeichnet werden — das war beim Scrollen als Ruckeln zu spüren. */
+    will-change: transform;
+    contain: paint;
   }
   html[data-theme="dark"] .draw-stack { background: #f7f5f0; border-color: #4a4237; }
   .draw-stack img.draw-layer {
@@ -1545,7 +1571,7 @@ function buildDrawField(card, det) {
     card, canvas, ctx: null, dpr: 1, cssW: 0, cssH: 0,
     color, width,
     eraser: false,
-    drawing: false, activeId: null, pen: false,
+    drawing: false, activeId: null,
     points: [], base: null, recognized: null,
     shapeDrag: false, shapeStart: null,
     holdAnchor: null, holdAnchorIndex: 0, holdTimer: null, flashTimer: null,
@@ -1781,15 +1807,10 @@ function isDrawInput(e) {
 
 function drawPointOf(f, ev) {
   const r = f.canvas.getBoundingClientRect();
-  const x = ev.clientX - r.left;
-  const y = ev.clientY - r.top;
-  let w = f.width;
-  const p = ev.pressure;
-  // Ohne echte Druckdaten (0 oder konstant 0.5) bleibt es bei der Grundstärke.
-  if (f.pen && typeof p === 'number' && p > 0 && Math.abs(p - 0.5) > 0.001) {
-    w = f.width * (0.4 + 0.9 * Math.min(1, p));
-  }
-  return { x, y, w };
+  // Die Strichstärke kommt AUSSCHLIESSLICH aus der Werkzeugleiste (drei Stufen).
+  // Der Stiftdruck wird bewusst ignoriert: Er machte den Strich beim leichten
+  // Aufsetzen dünn und beim Aufdrücken dick, obwohl eine Stufe gewählt war.
+  return { x: ev.clientX - r.left, y: ev.clientY - r.top, w: f.width };
 }
 
 function wireDrawPointer(f) {
@@ -1807,10 +1828,18 @@ function wireDrawPointer(f) {
   //     Der Finger scrollt NATIV — mit Schwung, ohne jeden Nachbau. Das ist
   //     der Normalfall, denn zwischen zwei Strichen ist immer offen.
   //   GESPERRT (.draw-lock, touch-action:none)
-  //     Wird beim Aufsetzen des Stifts gesetzt und ~1,2 s nach dem letzten
-  //     Strich wieder gelöst. So kann der aufliegende Handballen die Seite
+  //     Wird beim Aufsetzen des Stifts gesetzt und ~0,6 s nach dem letzten
+  //     Strich wieder gelöst (solange noch ein Finger/Handballen aufliegt,
+  //     wird weiter gewartet). So kann der aufliegende Handballen die Seite
   //     nicht wegscrollen. In diesem Zustand legt die App das Finger-Scrollen
   //     selbst um (panMove unten).
+  //
+  // WICHTIG für die Flüssigkeit: Alle Pointer-Zuhörer hier sind PASSIV. Ein
+  // nicht-passiver pointerdown/pointermove-Zuhörer zwingt WebKit, das Scrollen
+  // über diesem Element im Haupt-Thread abzuwickeln (es muss ja abwarten, ob
+  // die Seite preventDefault ruft) — genau daher kam das verbliebene Ruckeln,
+  // und nur über der Zeichenfläche. Verhindert wird das native Scrollen
+  // ausschließlich über touch-action, nie über preventDefault.
   //
   // Beim Selbst-Scrollen wird mit screenY gerechnet, NICHT mit clientY:
   // clientY ist auf die Seitenansicht bezogen und verschiebt sich unter
@@ -1847,9 +1876,15 @@ function wireDrawPointer(f) {
   function unlockTouchSoon() {
     clearTimeout(unlockTimer);
     if (alwaysLocked()) return;
-    // Erst mit Verzögerung freigeben: zwischen zwei Strichen liegt die Hand
-    // noch auf, und die soll nicht plötzlich die Seite wegziehen.
-    unlockTimer = setTimeout(() => c.classList.remove('draw-lock'), 1200);
+    // Erst mit Verzögerung freigeben, und solange noch etwas aufliegt (Hand,
+    // Handballen) gar nicht: sonst zieht der ruhende Handballen zwischen zwei
+    // Strichen plötzlich die Seite weg. Kurz gehalten wird trotzdem nur, damit
+    // der Finger möglichst schnell wieder NATIV scrollen kann — das ist der
+    // flüssige Weg, der Nachbau ist nur die Notlösung.
+    unlockTimer = setTimeout(function release() {
+      if (f.drawing || pan) { unlockTimer = setTimeout(release, 300); return; }
+      c.classList.remove('draw-lock');
+    }, 600);
   }
   f.applyFingerMode = () => {
     if (alwaysLocked()) lockTouch();
@@ -1869,6 +1904,7 @@ function wireDrawPointer(f) {
   // Beendet eine laufende Finger-Geste, ohne nachlaufen zu lassen.
   function panAbort() {
     if (!pan) return;
+    if (pan.raf) cancelAnimationFrame(pan.raf);
     window.removeEventListener('pointermove', panMove);
     window.removeEventListener('pointerup', panEnd);
     window.removeEventListener('pointercancel', panEnd);
@@ -1882,11 +1918,11 @@ function wireDrawPointer(f) {
       id: e.pointerId,
       startScreen: e.screenY, startScroll: window.scrollY,
       lastScreen: e.screenY, lastTime: t,
-      v: 0, moved: 0, locked: false
+      v: 0, moved: 0, locked: false, raf: 0, rafPending: false, pending: window.scrollY
     };
-    window.addEventListener('pointermove', panMove, { passive: false });
-    window.addEventListener('pointerup', panEnd);
-    window.addEventListener('pointercancel', panEnd);
+    window.addEventListener('pointermove', panMove, { passive: true });
+    window.addEventListener('pointerup', panEnd, { passive: true });
+    window.addEventListener('pointercancel', panEnd, { passive: true });
   }
 
   function panMove(e) {
@@ -1913,8 +1949,19 @@ function wireDrawPointer(f) {
     pan.lastTime = t;
     pan.moved = Math.max(pan.moved, Math.abs(e.screenY - pan.startScreen));
     pan.locked = true;                 // in dieser Geste scrollt die App selbst
-    scrollPageTo(pan.startScroll + (pan.startScreen - e.screenY));
-    if (e.cancelable) e.preventDefault();
+    // Nicht bei jedem Ereignis scrollen: der Pencil/Finger liefert bis zu
+    // 240 Ereignisse pro Sekunde, gezeichnet wird aber nur einmal pro Bild.
+    // Ein Scroll je Bild ist flüssiger und billiger.
+    pan.pending = pan.startScroll + (pan.startScreen - e.screenY);
+    if (!pan.rafPending) {
+      pan.rafPending = true;
+      pan.raf = requestAnimationFrame(() => {
+        if (!pan) return;
+        pan.rafPending = false;
+        pan.raf = 0;
+        scrollPageTo(pan.pending);
+      });
+    }
   }
 
   function panEnd(e) {
@@ -1923,6 +1970,8 @@ function wireDrawPointer(f) {
     window.removeEventListener('pointerup', panEnd);
     window.removeEventListener('pointercancel', panEnd);
     const p = pan;
+    if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; }
+    if (p.locked) scrollPageTo(p.pending);   // letzte Position noch übernehmen
     pan = null;
     const cancelled = !!(e && e.type === 'pointercancel');
     // Kaum bewegt: das war ein Tipp, kein Wischen -> Doppeltipp prüfen
@@ -1973,10 +2022,11 @@ function wireDrawPointer(f) {
     lockTouch();                      // Handballen darf jetzt nicht scrollen
     if (!f.ctx) fitDrawCanvas(f);
     if (!f.ctx) return;
-    e.preventDefault();
+    // Kein preventDefault: der Zuhörer ist passiv, damit WebKit das Scrollen
+    // über der Fläche nicht im Haupt-Thread abwickeln muss. Das native
+    // Verhalten hält stattdessen touch-action (.draw-lock) auf.
     try { c.setPointerCapture(e.pointerId); } catch (err) { /* egal */ }
     f.activeId = e.pointerId;
-    f.pen = e.pointerType === 'pen';
     f.drawing = true;
     f.recognized = null;
     // Zustand vor dem Strich sichern — Grundlage für Begradigen und Rückgängig
@@ -1989,16 +2039,15 @@ function wireDrawPointer(f) {
     f.holdAnchorIndex = 0;
     f.shapeDrag = false;
     armHoldTimer(f);
-  });
+  }, { passive: true });
 
   c.addEventListener('pointermove', (e) => {
     if (pan && e.pointerId === pan.id) return;   // Finger: siehe panMove am window
     if (!f.drawing || e.pointerId !== f.activeId) return;
-    e.preventDefault();
     // getCoalescedEvents liefert die Zwischenpunkte des Pencils -> glattere Striche
     const evts = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
     for (const ev of evts) addDrawPoint(f, drawPointOf(f, ev));
-  });
+  }, { passive: true });
 
   const finish = (e) => {
     if (pan && e && e.pointerId === pan.id) return;   // Finger: siehe panEnd
@@ -2025,7 +2074,7 @@ function wireDrawPointer(f) {
     f.points = [];
     unlockTouchSoon();                // Finger darf gleich wieder nativ scrollen
   };
-  c.addEventListener('pointerup', finish);
+  c.addEventListener('pointerup', finish, { passive: true });
   c.addEventListener('pointercancel', (e) => {
     if (pan && e && e.pointerId === pan.id) return;   // Finger: siehe panEnd
     clearTimeout(f.holdTimer);
@@ -2045,7 +2094,7 @@ function wireDrawPointer(f) {
     f.drawing = false; f.activeId = null; f.recognized = null; f.shapeDrag = false; f.points = [];
     if (f.base) { restoreBase(f); f.base = null; }
     unlockTouchSoon();
-  });
+  }, { passive: true });
 }
 
 function addDrawPoint(f, p) {
