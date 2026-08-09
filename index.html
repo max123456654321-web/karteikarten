@@ -1526,7 +1526,8 @@ function buildDrawField(card, det) {
     eraser: false,
     drawing: false, activeId: null, pen: false,
     points: [], base: null, recognized: null,
-    holdAnchor: null, holdTimer: null, flashTimer: null,
+    shapeDrag: false, shapeStart: null,
+    holdAnchor: null, holdAnchorIndex: 0, holdTimer: null, flashTimer: null,
     undo: [], redo: [],
     overlayOn: false,
     onResize: null
@@ -1774,15 +1775,26 @@ function wireDrawPointer(f) {
   const c = f.canvas;
 
   // Das Canvas hat touch-action:none, damit iPadOS beim Zeichnen nicht scrollt
-  // oder zoomt. Damit man die Seite trotzdem mit dem Finger bewegen kann, wird
-  // eine Finger-Bewegung auf der Zeichenfläche als Scrollen weitergereicht,
-  // solange "Mit Finger zeichnen" aus ist. Der Handballen erzeugt so weder
-  // Striche noch überraschende Sprünge.
-  let panId = null, panLastY = 0;
+  // oder zoomt (ohne das zeichnet der Apple Pencil unzuverlässig). Der Preis:
+  // die Seite scrollt über der Zeichenfläche auch nicht mehr von selbst —
+  // deshalb wird eine Finger-Bewegung hier selbst aufs Scrollen umgelegt,
+  // solange "Mit Finger zeichnen" aus ist.
+  //
+  // Wichtig ist dabei ABSOLUTES Rechnen (Startposition + Gesamtstrecke) statt
+  // eines Aufsummierens von Einzeldeltas: Beim Scrollen wandert die Fläche
+  // unter dem Finger weg, wodurch sich Deltas gegenseitig aufschaukelten und
+  // die Seite sprang. Zusätzlich hält setPointerCapture die Ereignisse beim
+  // Canvas, auch wenn es unter dem Finger wegscrollt.
+  let panId = null, panStartClientY = 0, panStartScrollY = 0;
 
   c.addEventListener('pointerdown', (e) => {
     if (!isDrawInput(e)) {
-      if (e.pointerType === 'touch') { panId = e.pointerId; panLastY = e.clientY; }
+      if (e.pointerType === 'touch' && panId === null) {
+        panId = e.pointerId;
+        panStartClientY = e.clientY;
+        panStartScrollY = window.scrollY;
+        try { c.setPointerCapture(e.pointerId); } catch (err) { /* egal */ }
+      }
       return;                         // Handballen/Finger: keine Striche
     }
     if (!f.ctx) fitDrawCanvas(f);
@@ -1800,13 +1812,14 @@ function wireDrawPointer(f) {
     const p = drawPointOf(f, e);
     f.points = [p];
     f.holdAnchor = p;
+    f.holdAnchorIndex = 0;
+    f.shapeDrag = false;
     armHoldTimer(f);
   });
 
   c.addEventListener('pointermove', (e) => {
     if (e.pointerId === panId) {
-      window.scrollBy(0, panLastY - e.clientY);
-      panLastY = e.clientY;
+      window.scrollTo(0, panStartScrollY + (panStartClientY - e.clientY));
       return;
     }
     if (!f.drawing || e.pointerId !== f.activeId) return;
@@ -1817,7 +1830,11 @@ function wireDrawPointer(f) {
   });
 
   const finish = (e) => {
-    if (e && e.pointerId === panId) { panId = null; return; }
+    if (e && e.pointerId === panId) {
+      try { c.releasePointerCapture(e.pointerId); } catch (err) { /* egal */ }
+      panId = null;
+      return;
+    }
     if (!f.drawing || (e && e.pointerId !== f.activeId)) return;
     clearTimeout(f.holdTimer);
     f.drawing = false;
@@ -1837,27 +1854,42 @@ function wireDrawPointer(f) {
     if (f.base) pushUndoState(f, f.base.toDataURL('image/png'));
     f.base = null;
     f.recognized = null;
+    f.shapeDrag = false;
     f.points = [];
   };
   c.addEventListener('pointerup', finish);
   c.addEventListener('pointercancel', (e) => {
-    if (e && e.pointerId === panId) { panId = null; return; }
+    if (e && e.pointerId === panId) {
+      try { c.releasePointerCapture(e.pointerId); } catch (err) { /* egal */ }
+      panId = null;
+      return;
+    }
     clearTimeout(f.holdTimer);
     clearTimeout(f.flashTimer);
     if (!f.drawing) return;
     // Abbruch (z.B. Systemgeste): Strich verwerfen, Ausgangszustand herstellen
-    f.drawing = false; f.activeId = null; f.recognized = null; f.points = [];
+    f.drawing = false; f.activeId = null; f.recognized = null; f.shapeDrag = false; f.points = [];
     if (f.base) { restoreBase(f); f.base = null; }
   });
 }
 
 function addDrawPoint(f, p) {
+  // Nach dem Begradigen einer Geraden bleibt der Strich gerade und hängt am
+  // Stift: Der Anfangspunkt steht fest, das Ende folgt dem Pencil, bis
+  // abgesetzt wird. So kann man die Gerade noch auf die gewünschte Länge und
+  // Richtung ziehen, statt zurück in einen krummen Strich zu fallen.
+  if (f.shapeDrag && f.recognized) {
+    clearTimeout(f.holdTimer);
+    dragRecognizedLine(f, p);
+    return;
+  }
   f.points.push(p);
   drawSegment(f, f.points.length - 1);
   // Bewegt sich der Stift wieder deutlich, wird eine erkannte Form verworfen
   // und der Strich läuft normal weiter.
   if (dist2(p, f.holdAnchor) > DRAW_HOLD_MOVE_PX * DRAW_HOLD_MOVE_PX) {
     f.holdAnchor = p;
+    f.holdAnchorIndex = f.points.length - 1;
     if (f.recognized) {
       f.recognized = null;
       clearTimeout(f.flashTimer);
@@ -1865,6 +1897,16 @@ function addDrawPoint(f, p) {
     }
     armHoldTimer(f);
   }
+}
+
+// Gerade/Pfeil am Stift mitziehen (siehe addDrawPoint).
+function dragRecognizedLine(f, p) {
+  const s = f.recognized;
+  clearTimeout(f.flashTimer);
+  s.a = { x: f.shapeStart.x, y: f.shapeStart.y };
+  s.b = snapEndpoint(s.a, p);
+  restoreBase(f);
+  drawShape(f, s, { color: f.color, width: f.width });
 }
 
 function applyStrokeStyle(f, w) {
@@ -1950,9 +1992,18 @@ function armHoldTimer(f) {
 
 function tryRecognizeShape(f) {
   if (!f.drawing || f.recognized || f.points.length < 4) return;
-  const shape = recognizeShape(f.points);
+  // Die Punkte AB dem Haltepunkt sind das Zittern der ruhig gehaltenen Hand und
+  // gehören nicht zum Strich. Ohne dieses Abschneiden sieht das Zittern für die
+  // Pfeilerkennung wie die Zickzack-Bewegung einer Pfeilspitze aus — eine
+  // gerade Linie wurde dann beim Halten fälschlich zum Pfeil.
+  const pts = f.points.slice(0, f.holdAnchorIndex + 1);
+  if (pts.length < 4) return;
+  const shape = recognizeShape(pts);
   if (!shape) return;
   f.recognized = shape;
+  // Gerade und Pfeil hängen ab jetzt am Stift (siehe addDrawPoint)
+  f.shapeDrag = (shape.type === 'line' || shape.type === 'arrow');
+  f.shapeStart = { x: pts[0].x, y: pts[0].y };
   restoreBase(f);
   drawShape(f, shape, { color: f.color, width: f.width });
   // Kurzes haptisches Signal, falls das Gerät es kann …
@@ -2089,6 +2140,13 @@ function recognizeArrow(pts) {
   let maxDev = 0;
   for (let i = 0; i <= firstTurn; i++) maxDev = Math.max(maxDev, distToLine(rs[i], rs[0], tip));
   if (maxDev > Math.max(6, 0.12 * bodyLen)) return null;
+
+  // Die Pfeilspitze muss auch räumlich deutlich aus der Linie herausragen.
+  // Ohne diese Prüfung genügte schon ein leicht zappeliges Strichende, um aus
+  // einer gewollten Geraden einen Pfeil zu machen.
+  let tailDev = 0;
+  for (let i = firstTurn; i < rs.length; i++) tailDev = Math.max(tailDev, distToLine(rs[i], rs[0], tip));
+  if (tailDev < Math.max(12, 0.06 * bodyLen)) return null;
 
   const a = { x: rs[0].x, y: rs[0].y };
   return { type: 'arrow', a, b: snapEndpoint(a, tip) };
