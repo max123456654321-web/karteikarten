@@ -1210,6 +1210,10 @@ function openSettings() {
           <div class="setting-desc">Zeigt oben links Bilder pro Sekunde und die Zahl der Aussetzer beim Scrollen. Nur zur Fehlersuche gedacht.</div>
         </div>
         <button class="switch ${diagnosticsEnabled() ? 'on' : ''}" id="switch-diag" aria-label="Leistungsanzeige"></button>
+      </div>
+      <!-- Damit man auf dem iPad sofort sieht, ob ein Update angekommen ist -->
+      <div class="setting-desc" style="margin-top:16px; text-align:center; opacity:.65">
+        Fassung vom ${escapeHtml(document.lastModified)}
       </div>`,
     actions: [{ label: 'Fertig', class: 'primary' }]
   });
@@ -3774,6 +3778,48 @@ function renderSessionSummary() {
 applyTheme();
 applyDiagnostics();
 renderHome();
+registerServiceWorker();
+
+/* ---------------------------------------------------------------------
+   Update-Zustellung
+   ---------------------------------------------------------------------
+   GitHub Pages liefert die index.html mit "Cache-Control: max-age=600" aus.
+   Eine App auf dem Home-Bildschirm zeigt deshalb nach einem Update lange
+   noch die alte Fassung. Der Service Worker (sw.js) holt alles aus dem
+   eigenen Verzeichnis "network first" und beseitigt das dauerhaft.
+
+   Zusätzlich wird beim Start und bei jeder Rückkehr in die App geprüft, ob
+   auf dem Server eine neuere Fassung liegt (Last-Modified). Wenn ja, wird
+   einmal neu geladen — aber nur, wenn gerade nicht gezeichnet wird, damit
+   keine Skizze verloren geht.
+   --------------------------------------------------------------------- */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  navigator.serviceWorker.register('sw.js').catch(() => { /* z.B. privater Modus */ });
+}
+
+let bekannteFassung = null;
+
+async function pruefeAufUpdate() {
+  if (location.protocol === 'file:') return;
+  if (drawField && drawField.drawing) return;          // nicht mitten im Strich
+  try {
+    const res = await fetch(location.pathname + '?stand=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const stand = res.headers.get('last-modified') || res.headers.get('etag');
+    if (!stand) return;
+    if (bekannteFassung === null) { bekannteFassung = stand; return; }
+    if (stand === bekannteFassung) return;
+    bekannteFassung = stand;
+    showToast('Neue Fassung gefunden — wird geladen …');
+    setTimeout(() => location.reload(), 900);
+  } catch (err) { /* offline: dann eben beim nächsten Mal */ }
+}
+
+pruefeAufUpdate();
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) pruefeAufUpdate();
+});
 </script>
 </body>
 </html>
