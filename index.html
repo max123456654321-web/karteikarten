@@ -511,9 +511,14 @@ window.MathJax = {
   .draw-size .dot { border-radius: 50%; background: currentColor; display: block; }
 
   .draw-stack {
-    position: relative; margin: 0 auto;
-    /* 4:3 und höchstens ~55 % der Bildschirmhöhe (55vh * 4/3 ≈ 73vh Breite) */
-    width: min(100%, 73vh);
+    position: relative;
+    /* Rund 15 % breiter als die Textspalte: die Fläche darf in das Polster der
+       Karte (26px) und den Seitenrand der Seite (20px) hineinragen und wird
+       über margin-left/transform wieder mittig gestellt. Nach oben begrenzen
+       100vw (damit nie quer gescrollt wird) und 84vh (Querformat). */
+    width: min(calc(100% + 92px), calc(100vw - 16px), 84vh);
+    margin-left: 50%;
+    transform: translateX(-50%);
     aspect-ratio: 4 / 3;
     background: #fdfcf9; border: 1px solid var(--line); border-radius: 14px;
     overflow: hidden;
@@ -529,8 +534,17 @@ window.MathJax = {
   .draw-prev { z-index: 2; opacity: .3; display: none; }
   .draw-canvas {
     position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3;
-    touch-action: none;   /* sonst scrollt/zoomt iPadOS beim Zeichnen */
+    /* pan-y: der Finger scrollt NATIV (mit Schwung, ohne Nachbau in JS) —
+       das ist der einzige Weg, der sich auf iPadOS zuverlässig anfühlt.
+       Zoomen und seitliches Wischen bleiben aus, Zeichengesten mit dem Finger
+       gibt es hier ohnehin keine. */
+    touch-action: pan-y;
   }
+  /* Solange der Stift zeichnet (und kurz danach), ist jede Touch-Geste gesperrt:
+     der aufliegende Handballen darf die Seite nicht wegscrollen, und der Pencil
+     muss zuverlässig zeichnen. In diesem Zustand legt die App das Finger-
+     Scrollen selbst um (siehe wireDrawPointer). */
+  .draw-canvas.draw-lock { touch-action: none; }
   .draw-solution { z-index: 4; opacity: .5; display: none; }
   /* Bild, das als Hintergrundvorlage ins Canvas gewandert ist, im Text ausblenden */
   img[data-draw-template] { display: none !important; }
@@ -1143,6 +1157,9 @@ function openSettings() {
     const on = !fingerDrawingEnabled();
     lsSet(DRAW_PREF.finger, on ? '1' : '0');
     fingerSwitch.classList.toggle('on', on);
+    // Mit dem Finger zeichnen und mit dem Finger scrollen schließen sich aus:
+    // beim Zeichnen muss die Touch-Geste dauerhaft gesperrt bleiben.
+    if (drawField && drawField.applyFingerMode) drawField.applyFingerMode();
   });
   const straightenSwitch = document.getElementById('switch-straighten');
   straightenSwitch.addEventListener('click', () => {
@@ -1426,6 +1443,8 @@ function destroyDrawField() {
     clearTimeout(drawField.flashTimer);
     window.removeEventListener('resize', drawField.onResize);
     window.removeEventListener('orientationchange', drawField.onResize);
+    // Läuft gerade eine Finger-Scrollgeste, hängen deren Zuhörer am window
+    if (drawField.stopPan) drawField.stopPan();
     drawField = null;
   }
   const fab = document.getElementById('draw-pen-fab');
@@ -1512,11 +1531,13 @@ function buildDrawField(card, det) {
       <button class="draw-mini-btn" id="draw-overlay-toggle">🔍 Überblenden</button>
       <input type="range" id="draw-overlay-opacity" min="10" max="100" value="50" title="Transparenz der Überblendung">
     </div>
-    <div class="draw-hint">Mit dem Apple Pencil zeichnen. Am Ende eines Strichs kurz gedrückt halten — die Form wird begradigt.</div>
+    <div class="draw-hint">Mit dem Apple Pencil zeichnen. Am Ende eines Strichs kurz gedrückt halten — die Form wird begradigt.<br>Mit dem Finger auf der Fläche scrollen, Doppeltipp dreht die Karte um.</div>
   `;
   anchor.appendChild(block);
 
-  // Innerhalb des Zeichenfelds darf der Doppeltipp die Karte nicht umdrehen.
+  // Klicks im Zeichenfeld dürfen nicht bis zum Karten-Handler durchschlagen —
+  // sonst zählt derselbe Doppeltipp doppelt. Auf der Zeichenfläche selbst
+  // übernimmt wireDrawPointer die Doppeltipp-Erkennung (nur mit dem Finger).
   block.addEventListener('click', (e) => e.stopPropagation());
 
   const canvas = block.querySelector('#draw-canvas');
@@ -1546,7 +1567,7 @@ function buildDrawField(card, det) {
 
   // Auf Zeichenkarten übernimmt der Knopf das Aufdecken.
   const hint = document.getElementById('tap-hint');
-  if (hint) hint.textContent = 'Doppeltipp außerhalb des Zeichenfelds dreht die Karte um';
+  if (hint) hint.textContent = 'Doppeltipp mit dem Finger dreht die Karte um — auch auf der Zeichenfläche';
 }
 
 // Bildvorlage und Lösungsbild bestimmen.
@@ -1774,29 +1795,182 @@ function drawPointOf(f, ev) {
 function wireDrawPointer(f) {
   const c = f.canvas;
 
-  // Das Canvas hat touch-action:none, damit iPadOS beim Zeichnen nicht scrollt
-  // oder zoomt (ohne das zeichnet der Apple Pencil unzuverlässig). Der Preis:
-  // die Seite scrollt über der Zeichenfläche auch nicht mehr von selbst —
-  // deshalb wird eine Finger-Bewegung hier selbst aufs Scrollen umgelegt,
-  // solange "Mit Finger zeichnen" aus ist.
+  // ---------------------------------------------------------------------
+  // Finger-Scrollen über der Zeichenfläche — zwei Zustände
+  // ---------------------------------------------------------------------
+  // Zielkonflikt: der Apple Pencil zeichnet nur mit touch-action:none
+  // zuverlässig, aber genau das nimmt der Seite das native Scrollen über der
+  // Fläche. Ein in JS nachgebautes Scrollen (der bisherige Weg) fühlte sich
+  // auf dem iPad schaukelig an. Deshalb jetzt:
   //
-  // Wichtig ist dabei ABSOLUTES Rechnen (Startposition + Gesamtstrecke) statt
-  // eines Aufsummierens von Einzeldeltas: Beim Scrollen wandert die Fläche
-  // unter dem Finger weg, wodurch sich Deltas gegenseitig aufschaukelten und
-  // die Seite sprang. Zusätzlich hält setPointerCapture die Ereignisse beim
-  // Canvas, auch wenn es unter dem Finger wegscrollt.
-  let panId = null, panStartClientY = 0, panStartScrollY = 0;
+  //   OFFEN (Standard, .draw-canvas mit touch-action:pan-y)
+  //     Der Finger scrollt NATIV — mit Schwung, ohne jeden Nachbau. Das ist
+  //     der Normalfall, denn zwischen zwei Strichen ist immer offen.
+  //   GESPERRT (.draw-lock, touch-action:none)
+  //     Wird beim Aufsetzen des Stifts gesetzt und ~1,2 s nach dem letzten
+  //     Strich wieder gelöst. So kann der aufliegende Handballen die Seite
+  //     nicht wegscrollen. In diesem Zustand legt die App das Finger-Scrollen
+  //     selbst um (panMove unten).
+  //
+  // Beim Selbst-Scrollen wird mit screenY gerechnet, NICHT mit clientY:
+  // clientY ist auf die Seitenansicht bezogen und verschiebt sich unter
+  // iPadOS beim Scrollen mit, obwohl der Finger stillsteht. Daraus wurde eine
+  // Rückkopplung (scrollen -> clientY ändert sich -> noch weiter scrollen),
+  // die die Seite in Sprüngen ans obere und untere Ende schleuderte — genau
+  // das "Schaukeln". screenY ist an den Bildschirm gebunden und vom Scrollen
+  // unberührt; ein Plausibilitäts-Deckel fängt unrealistische Sprünge ab.
+  // setPointerCapture wird bewusst nicht mehr gesetzt (Touch-Pointer sind
+  // ohnehin implizit gebunden, die Fixierung war an den verrutschten
+  // Koordinaten mitbeteiligt); die Bewegungen hängen stattdessen am window.
+  let pan = null;          // aktive Finger-Geste
+  let inertia = 0;         // rAF-Handle des Nachlaufs
+  let lastFingerTap = 0;   // für den Doppeltipp auf der Zeichenfläche
+  let unlockTimer = 0;
+
+  const isLocked = () => c.classList.contains('draw-lock');
+
+  // Sollte iPadOS den Pencil doch zum Scrollen benutzen (Einstellung "Mit
+  // Apple Pencil scrollen & zoomen" ist eingeschaltet), bricht der erste
+  // Strich als pointercancel ab. Dann bleibt die Sperre dauerhaft an.
+  const STICKY_LOCK_KEY = 'draw-pen-scroll-lock';
+  let stickyLock = false;
+  try { stickyLock = localStorage.getItem(STICKY_LOCK_KEY) === '1'; } catch (err) { /* egal */ }
+
+  // Dauerhafte Sperre nötig? Beim Zeichnen mit dem Finger muss jede Touch-
+  // Geste beim Canvas bleiben, sonst scrollt die Seite statt zu zeichnen.
+  const alwaysLocked = () => stickyLock || fingerDrawingEnabled();
+
+  function lockTouch() {
+    clearTimeout(unlockTimer);
+    c.classList.add('draw-lock');
+  }
+  function unlockTouchSoon() {
+    clearTimeout(unlockTimer);
+    if (alwaysLocked()) return;
+    // Erst mit Verzögerung freigeben: zwischen zwei Strichen liegt die Hand
+    // noch auf, und die soll nicht plötzlich die Seite wegziehen.
+    unlockTimer = setTimeout(() => c.classList.remove('draw-lock'), 1200);
+  }
+  f.applyFingerMode = () => {
+    if (alwaysLocked()) lockTouch();
+    else c.classList.remove('draw-lock');
+  };
+  f.applyFingerMode();
+
+  function stopInertia() {
+    if (inertia) { cancelAnimationFrame(inertia); inertia = 0; }
+  }
+
+  function scrollPageTo(y) {
+    const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    window.scrollTo(0, Math.max(0, Math.min(max, y)));
+  }
+
+  // Beendet eine laufende Finger-Geste, ohne nachlaufen zu lassen.
+  function panAbort() {
+    if (!pan) return;
+    window.removeEventListener('pointermove', panMove);
+    window.removeEventListener('pointerup', panEnd);
+    window.removeEventListener('pointercancel', panEnd);
+    pan = null;
+  }
+
+  function panStart(e) {
+    stopInertia();
+    const t = e.timeStamp || performance.now();
+    pan = {
+      id: e.pointerId,
+      startScreen: e.screenY, startScroll: window.scrollY,
+      lastScreen: e.screenY, lastTime: t,
+      v: 0, moved: 0, locked: false
+    };
+    window.addEventListener('pointermove', panMove, { passive: false });
+    window.addEventListener('pointerup', panEnd);
+    window.addEventListener('pointercancel', panEnd);
+  }
+
+  function panMove(e) {
+    if (!pan || e.pointerId !== pan.id) return;
+    const t = e.timeStamp || performance.now();
+    const step = pan.lastScreen - e.screenY;
+    if (!isLocked()) {
+      // Offener Zustand: die Seite scrollt nativ, hier wird nur mitgezählt,
+      // um Tippen von Wischen unterscheiden zu können.
+      pan.moved = Math.max(pan.moved, Math.abs(e.screenY - pan.startScreen));
+      pan.lastScreen = e.screenY;
+      pan.lastTime = t;
+      return;
+    }
+    // Plausibilitätsdeckel: mehr als eine halbe Bildschirmhöhe zwischen zwei
+    // Ereignissen schafft kein Finger — das wäre wieder eine Rückkopplung.
+    if (Math.abs(step) > window.innerHeight * 0.5) {
+      pan.startScreen -= step;      // Sprung ausklammern, Anker mitziehen
+    } else {
+      const dt = t - pan.lastTime;
+      if (dt > 0) pan.v = 0.7 * (step / dt) + 0.3 * pan.v;   // px/ms, geglättet
+    }
+    pan.lastScreen = e.screenY;
+    pan.lastTime = t;
+    pan.moved = Math.max(pan.moved, Math.abs(e.screenY - pan.startScreen));
+    pan.locked = true;                 // in dieser Geste scrollt die App selbst
+    scrollPageTo(pan.startScroll + (pan.startScreen - e.screenY));
+    if (e.cancelable) e.preventDefault();
+  }
+
+  function panEnd(e) {
+    if (!pan || (e && e.pointerId !== pan.id)) return;
+    window.removeEventListener('pointermove', panMove);
+    window.removeEventListener('pointerup', panEnd);
+    window.removeEventListener('pointercancel', panEnd);
+    const p = pan;
+    pan = null;
+    const cancelled = !!(e && e.type === 'pointercancel');
+    // Kaum bewegt: das war ein Tipp, kein Wischen -> Doppeltipp prüfen
+    if (p.moved < 12) { if (!cancelled) handleFingerTap(); return; }
+    if (cancelled || !p.locked) return;   // offener Zustand: Schwung macht Safari
+    // Nachlauf wie beim normalen Scrollen, sonst fühlt sich das Wischen
+    // über der Zeichenfläche abgehackt an.
+    let v = Math.max(-4, Math.min(4, p.v));
+    if (Math.abs(v) < 0.15) return;
+    let last = performance.now();
+    const step = (now) => {
+      const dt = Math.min(32, now - last);
+      last = now;
+      const before = window.scrollY;
+      scrollPageTo(before + v * dt);
+      v *= Math.pow(0.995, dt);
+      if (Math.abs(v) < 0.02 || Math.abs(window.scrollY - before) < 0.4) { inertia = 0; return; }
+      inertia = requestAnimationFrame(step);
+    };
+    inertia = requestAnimationFrame(step);
+  }
+
+  // Doppeltipp mit dem Finger dreht die Karte um — auch mitten auf der
+  // Zeichenfläche, und in beide Richtungen (Lösung zeigen / zurück zur Frage).
+  // Der Stift ist davon ausgenommen, sonst würden zwei schnelle Punkte die
+  // Karte umdrehen.
+  function handleFingerTap() {
+    const now = Date.now();
+    if (now - lastFingerTap < 350) {
+      lastFingerTap = 0;
+      toggleCardFace();
+    } else {
+      lastFingerTap = now;
+    }
+  }
+
+  f.stopPan = () => { stopInertia(); panAbort(); clearTimeout(unlockTimer); };
 
   c.addEventListener('pointerdown', (e) => {
     if (!isDrawInput(e)) {
-      if (e.pointerType === 'touch' && panId === null) {
-        panId = e.pointerId;
-        panStartClientY = e.clientY;
-        panStartScrollY = window.scrollY;
-        try { c.setPointerCapture(e.pointerId); } catch (err) { /* egal */ }
-      }
+      // Der aufliegende Handballen darf während des Zeichnens weder scrollen
+      // noch die Karte umdrehen.
+      if (e.pointerType === 'touch' && pan === null && !f.drawing) panStart(e);
       return;                         // Handballen/Finger: keine Striche
     }
+    stopInertia();
+    panAbort();                       // Stift hat Vorrang vor dem Finger
+    lockTouch();                      // Handballen darf jetzt nicht scrollen
     if (!f.ctx) fitDrawCanvas(f);
     if (!f.ctx) return;
     e.preventDefault();
@@ -1818,10 +1992,7 @@ function wireDrawPointer(f) {
   });
 
   c.addEventListener('pointermove', (e) => {
-    if (e.pointerId === panId) {
-      window.scrollTo(0, panStartScrollY + (panStartClientY - e.clientY));
-      return;
-    }
+    if (pan && e.pointerId === pan.id) return;   // Finger: siehe panMove am window
     if (!f.drawing || e.pointerId !== f.activeId) return;
     e.preventDefault();
     // getCoalescedEvents liefert die Zwischenpunkte des Pencils -> glattere Striche
@@ -1830,11 +2001,7 @@ function wireDrawPointer(f) {
   });
 
   const finish = (e) => {
-    if (e && e.pointerId === panId) {
-      try { c.releasePointerCapture(e.pointerId); } catch (err) { /* egal */ }
-      panId = null;
-      return;
-    }
+    if (pan && e && e.pointerId === pan.id) return;   // Finger: siehe panEnd
     if (!f.drawing || (e && e.pointerId !== f.activeId)) return;
     clearTimeout(f.holdTimer);
     f.drawing = false;
@@ -1856,20 +2023,28 @@ function wireDrawPointer(f) {
     f.recognized = null;
     f.shapeDrag = false;
     f.points = [];
+    unlockTouchSoon();                // Finger darf gleich wieder nativ scrollen
   };
   c.addEventListener('pointerup', finish);
   c.addEventListener('pointercancel', (e) => {
-    if (e && e.pointerId === panId) {
-      try { c.releasePointerCapture(e.pointerId); } catch (err) { /* egal */ }
-      panId = null;
-      return;
-    }
+    if (pan && e && e.pointerId === pan.id) return;   // Finger: siehe panEnd
     clearTimeout(f.holdTimer);
     clearTimeout(f.flashTimer);
     if (!f.drawing) return;
+    // Bricht ein Stiftstrich ab, während die Fläche offen war, dann hat iPadOS
+    // den Pencil zum Scrollen benutzt ("Mit Apple Pencil scrollen & zoomen"
+    // ist eingeschaltet). Dann bleibt die Sperre dauerhaft an — der Finger
+    // scrollt ab da über den Nachbau in panMove.
+    if (e && e.pointerType === 'pen' && !stickyLock) {
+      stickyLock = true;
+      try { localStorage.setItem(STICKY_LOCK_KEY, '1'); } catch (err) { /* egal */ }
+      lockTouch();
+      showToast('Zeichenfläche für den Stift gesperrt — Finger-Scrollen bleibt möglich');
+    }
     // Abbruch (z.B. Systemgeste): Strich verwerfen, Ausgangszustand herstellen
     f.drawing = false; f.activeId = null; f.recognized = null; f.shapeDrag = false; f.points = [];
     if (f.base) { restoreBase(f); f.base = null; }
+    unlockTouchSoon();
   });
 }
 
