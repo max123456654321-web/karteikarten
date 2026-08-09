@@ -960,9 +960,15 @@ function applyTheme() {
   if (document.getElementById('flashcard')) renderCurrentCardView();
 }
 // Zeichnet die gerade sichtbare Kartenansicht neu (Durchsehen oder Lernen).
+// War die Rückseite gerade aufgedeckt, bleibt sie das auch danach — sonst
+// springt die Karte beim Umschalten des Designs zurück auf die Frage.
 function renderCurrentCardView() {
+  const backWrap = document.getElementById('card-back-wrap');
+  const wasRevealed = !!backWrap && backWrap.style.display === 'block';
   if (browseSession) renderBrowseView();
   else if (currentSession && currentSession.current) renderStudyView();
+  else return;
+  if (wasRevealed) toggleCardFace();
 }
 if (darkMediaQuery && darkMediaQuery.addEventListener) {
   darkMediaQuery.addEventListener('change', () => { if (getThemePref() === 'auto') applyTheme(); });
@@ -1026,8 +1032,9 @@ function openSettings() {
    2. Inline-Styles im Karten-HTML (style="color:#000", <font color>) —
       die werden nach dem Zeichnen geprüft und nur dann aufgehellt, wenn der
       Text sonst zu dunkel für den dunklen Kartenhintergrund wäre
-      (adaptCardForDark). Elemente mit eigenem hellem Hintergrund (z.B. weiße
-      Boxen oder Bilder) bleiben unangetastet — dort ist dunkler Text richtig.
+      (adaptCardForDark). Elemente mit eigenem hellem Hintergrund (z.B. ein
+      Tabellenkopf mit "background:#eef2f8") bekommen umgekehrt eine dunkle
+      Schriftfarbe — sonst stünde dort die helle App-Schrift weiß auf weiß.
    --------------------------------------------------------------------- */
 function stripColorDeclarations(css) {
   if (!css) return '';
@@ -1080,35 +1087,56 @@ function parseCssColor(str) {
 function relLuminance(c) {
   return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
 }
+// Helle Textfarbe -> dunkler machen. Gegenstück zu lightenTextColor, gebraucht
+// für Text auf einer hellen Insel (z.B. Tabellenkopf mit hellem Hintergrund):
+// dort ist die helle Schriftfarbe der App unsichtbar.
+function darkenTextColor(c) {
+  const hsl = toHsl(c);
+  if (hsl.d < .08) return '#16181d';                    // praktisch grau/weiß
+  return `hsl(${hsl.h}, ${Math.round(Math.min(1, hsl.s * 1.1) * 100)}%, 28%)`;
+}
 // Dunkle Textfarbe -> heller machen. Neutrales Schwarz/Grau wird zur normalen
 // Schriftfarbe der App, farbige Töne behalten ihren Farbton.
 function lightenTextColor(c) {
+  const hsl = toHsl(c);
+  if (hsl.d < .08) return 'var(--ink)';                 // praktisch grau/schwarz
+  return `hsl(${hsl.h}, ${Math.round(Math.min(1, hsl.s * 1.1) * 100)}%, 72%)`;
+}
+function toHsl(c) {
   const r = c.r / 255, g = c.g / 255, b = c.b / 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
   const l = (max + min) / 2;
-  if (d < .08) return 'var(--ink)';                     // praktisch grau/schwarz
+  if (d < .0001) return { h: 0, s: 0, l, d };
   const s = d / (1 - Math.abs(2 * l - 1));
   let h;
   if (max === r) h = ((g - b) / d) % 6;
   else if (max === g) h = (b - r) / d + 2;
   else h = (r - g) / d + 4;
   h = Math.round(h * 60); if (h < 0) h += 360;
-  return `hsl(${h}, ${Math.round(Math.min(1, s * 1.1) * 100)}%, 72%)`;
+  return { h, s, l, d };
 }
 
 function adaptCardForDark(root) {
   if (!root || !isDarkMode()) return;
+  // Reihenfolge von querySelectorAll ist Dokumentreihenfolge: Eltern werden vor
+  // ihren Kindern markiert, deshalb greift closest() weiter unten schon.
   root.querySelectorAll('*').forEach(el => {
     const tag = el.tagName;
     if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'IMG' || tag === 'BR') return;
-    // Innerhalb einer hellen Box (eigener heller Hintergrund) nichts ändern
-    if (el.closest('[data-light-island]')) return;
     const cs = getComputedStyle(el);
     const bg = parseCssColor(cs.backgroundColor);
-    if (bg && bg.a > .5 && relLuminance(bg) > .5) { el.setAttribute('data-light-island', ''); return; }
+    if (bg && bg.a > .5 && relLuminance(bg) > .5) el.setAttribute('data-light-island', '');
+    // Helle Insel = eigener heller Hintergrund (z.B. Tabellenkopf) oder in einer
+    // solchen Box liegend. Dort gilt die umgekehrte Regel: Text muss dunkel sein,
+    // sonst steht die helle Schriftfarbe der App weiß auf weiß.
+    const onLight = el.hasAttribute('data-light-island') || !!el.closest('[data-light-island]');
     const col = parseCssColor(cs.color);
     if (!col || col.a < .1) return;
-    if (relLuminance(col) < .45) el.style.color = lightenTextColor(col);
+    if (onLight) {
+      if (relLuminance(col) > .45) el.style.color = darkenTextColor(col);
+    } else if (relLuminance(col) < .45) {
+      el.style.color = lightenTextColor(col);
+    }
   });
 }
 
@@ -1721,7 +1749,7 @@ function renderStudyView() {
     <header class="topbar">
       <button class="back-btn" id="exit-session">Beenden</button>
       <h1 style="font-size:1.1rem">${escapeHtml(s.deck.name)}</h1>
-      <span style="width:60px"></span>
+      <button class="icon-btn" id="open-settings" title="Einstellungen">⚙️</button>
     </header>
     <main>
       <div class="progress-wrap">
@@ -1748,6 +1776,8 @@ function renderStudyView() {
     currentSession = null;
     renderHome();
   });
+
+  document.getElementById('open-settings').addEventListener('click', openSettings);
 
   document.getElementById('card-del').addEventListener('click', confirmDeleteCurrentStudyCard);
 
