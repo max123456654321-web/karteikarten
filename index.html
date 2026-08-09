@@ -481,6 +481,82 @@ window.MathJax = {
     to { opacity: 1; transform: translate(-50%, 0); }
   }
 
+  /* ---------- Zeichenfeld (Apple Pencil) ----------
+     Erscheint nur bei Zeichenaufgaben (siehe detectDrawing) oder wenn der
+     Stift-Knopf unten rechts gedrückt wurde. Die Zeichenfläche bleibt bewusst
+     immer hell — auch im Dark Mode —, weil man auf hellem Grund zeichnet. */
+  .draw-block { margin: 16px 0 6px; text-align: center; }
+  .draw-toolbar {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+    gap: 6px; margin-bottom: 8px;
+  }
+  .draw-toolbar .sep { width: 1px; height: 26px; background: var(--line); margin: 0 3px; }
+  /* Mindestgröße 44x44 Punkt, damit die Knöpfe auf dem iPad mit dem Finger treffbar sind */
+  .draw-btn {
+    width: 44px; height: 44px; min-width: 44px; padding: 0; border: none; border-radius: 12px;
+    background: rgba(255,255,255,.6); color: var(--ink);
+    display: flex; align-items: center; justify-content: center; font-size: 1.05rem;
+    -webkit-appearance: none; appearance: none; cursor: pointer;
+  }
+  html[data-theme="dark"] .draw-btn { background: rgba(255,255,255,.08); color: var(--ink); }
+  .draw-btn:active { transform: scale(.92); }
+  .draw-btn:disabled { opacity: .3; }
+  .draw-btn.active { box-shadow: inset 0 0 0 3px var(--accent); background: var(--accent-soft); }
+  .draw-btn.eraser-on { background: var(--hard); color: #241c07; box-shadow: inset 0 0 0 3px var(--accent-dark); }
+  .draw-btn.danger { color: var(--again); }
+  .draw-color .dot {
+    width: 22px; height: 22px; border-radius: 50%; display: block;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.18);
+  }
+  .draw-size .dot { border-radius: 50%; background: currentColor; display: block; }
+
+  .draw-stack {
+    position: relative; margin: 0 auto;
+    /* 4:3 und höchstens ~55 % der Bildschirmhöhe (55vh * 4/3 ≈ 73vh Breite) */
+    width: min(100%, 73vh);
+    aspect-ratio: 4 / 3;
+    background: #fdfcf9; border: 1px solid var(--line); border-radius: 14px;
+    overflow: hidden;
+  }
+  html[data-theme="dark"] .draw-stack { background: #f7f5f0; border-color: #4a4237; }
+  .draw-stack img.draw-layer {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; pointer-events: none;
+    /* Die Dark-Mode-Regel für Kartenbilder (weiße Unterlage) darf hier nicht greifen */
+    background: none !important; padding: 0 !important; border-radius: 0; max-width: none;
+  }
+  .draw-template { z-index: 1; }
+  .draw-prev { z-index: 2; opacity: .3; display: none; }
+  .draw-canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3;
+    touch-action: none;   /* sonst scrollt/zoomt iPadOS beim Zeichnen */
+  }
+  .draw-solution { z-index: 4; opacity: .5; display: none; }
+  /* Bild, das als Hintergrundvorlage ins Canvas gewandert ist, im Text ausblenden */
+  img[data-draw-template] { display: none !important; }
+
+  .draw-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 10px; }
+  .draw-actions button { padding: 13px 16px; font-size: .9rem; font-weight: 600; }
+  .draw-solve-btn { background: linear-gradient(135deg, var(--good), #468a63); color: #fff; box-shadow: var(--shadow-sm); }
+  .draw-mini-btn { background: var(--line); color: var(--ink); }
+  html[data-theme="dark"] .draw-mini-btn { background: rgba(255,255,255,.09); }
+  .draw-overlay-row {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    margin-top: 10px; flex-wrap: wrap;
+  }
+  .draw-overlay-row input[type=range] { width: 150px; accent-color: var(--accent); }
+  .draw-hint { color: var(--ink-soft); font-size: .76rem; margin-top: 8px; line-height: 1.4; }
+  #draw-persist:not(:empty) { margin: 2px 0 14px; }
+  .draw-pen-fab {
+    position: fixed; right: 16px; bottom: 16px; z-index: 45;
+    width: 54px; height: 54px; border-radius: 50%; padding: 0; border: none;
+    background: var(--card-bg); color: var(--ink); box-shadow: var(--shadow-md);
+    font-size: 1.3rem; display: flex; align-items: center; justify-content: center;
+    -webkit-appearance: none; appearance: none;
+  }
+  .draw-pen-fab:active { transform: scale(.93); }
+  .draw-pen-fab.active { background: var(--accent-soft); box-shadow: var(--shadow-md), inset 0 0 0 3px var(--accent); }
+
   #file-input { display: none; }
 
   @media (min-width: 600px) {
@@ -503,9 +579,14 @@ window.MathJax = {
    Object Stores:
      decks: { id, name, importDate, newPerDay, newIntroducedToday, newIntroducedDate }
      cards: { id, deckId, front, back, ease, interval, reps, due, lapses, firstReviewDone, created }
+     sketches: { cardId, dataUrl, savedAt }   (ab Version 2, für "Skizze behalten")
+
+   VERSIONSMIGRATION: onupgradeneeded legt nur an, was noch fehlt. Bestehende
+   Stapel und ihr Lernfortschritt bleiben beim Update auf Version 2 unangetastet
+   — es kommt lediglich der neue Store "sketches" dazu.
    --------------------------------------------------------------------- */
 const DB_NAME = 'karteikartenDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 let dbPromise = null;
 
 function openDB() {
@@ -520,6 +601,10 @@ function openDB() {
       if (!db.objectStoreNames.contains('cards')) {
         const store = db.createObjectStore('cards', { keyPath: 'id', autoIncrement: true });
         store.createIndex('deckId', 'deckId', { unique: false });
+      }
+      // Version 2: gespeicherte Skizzen (eine pro Karte)
+      if (!db.objectStoreNames.contains('sketches')) {
+        db.createObjectStore('sketches', { keyPath: 'cardId' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -558,14 +643,18 @@ const Store = {
     return reqToPromise(t.objectStore('decks').getAll());
   },
   async deleteDeck(id) {
-    const t = await tx(['decks', 'cards'], 'readwrite');
+    const t = await tx(['decks', 'cards', 'sketches'], 'readwrite');
     t.objectStore('decks').delete(id);
+    const sketchStore = t.objectStore('sketches');
     const idx = t.objectStore('cards').index('deckId');
     const cursorReq = idx.openCursor(IDBKeyRange.only(id));
     await new Promise((resolve, reject) => {
       cursorReq.onsuccess = (e) => {
         const cursor = e.target.result;
-        if (cursor) { cursor.delete(); cursor.continue(); }
+        if (cursor) {
+          sketchStore.delete(cursor.value.id);   // gespeicherte Skizze mit entsorgen
+          cursor.delete(); cursor.continue();
+        }
         else resolve();
       };
       cursorReq.onerror = () => reject(cursorReq.error);
@@ -596,6 +685,23 @@ const Store = {
   async deleteCard(id) {
     const t = await tx(['cards'], 'readwrite');
     await reqToPromise(t.objectStore('cards').delete(id));
+    this.deleteSketch(id).catch(() => {});
+  },
+
+  /* Gespeicherte Skizzen ("Skizze behalten"): höchstens eine pro Karte, die
+     jeweils neueste. Fehler werden bewusst geschluckt — eine fehlende Skizze
+     darf das Lernen nie blockieren. */
+  async saveSketch(cardId, dataUrl) {
+    const t = await tx(['sketches'], 'readwrite');
+    await reqToPromise(t.objectStore('sketches').put({ cardId, dataUrl, savedAt: Date.now() }));
+  },
+  async getSketch(cardId) {
+    const t = await tx(['sketches'], 'readonly');
+    return reqToPromise(t.objectStore('sketches').get(cardId));
+  },
+  async deleteSketch(cardId) {
+    const t = await tx(['sketches'], 'readwrite');
+    await reqToPromise(t.objectStore('sketches').delete(cardId));
   }
 };
 
@@ -651,11 +757,13 @@ async function parseApkg(file) {
   const modelsJson = colRes[0].values[0][0];
   const models = JSON.parse(modelsJson);
 
-  const notesRes = db.exec('SELECT id, mid, flds FROM notes');
+  // tags: von Anki durch Leerzeichen getrennt — wird für die Zeichenfeld-
+  // Erkennung gebraucht (Tag "zeichnen", siehe detectDrawing).
+  const notesRes = db.exec('SELECT id, mid, flds, tags FROM notes');
   const notesById = {};
   if (notesRes.length) {
     for (const row of notesRes[0].values) {
-      notesById[row[0]] = { mid: row[1], flds: row[2] };
+      notesById[row[0]] = { mid: row[1], flds: row[2], tags: row[3] || '' };
     }
   }
 
@@ -679,7 +787,7 @@ async function parseApkg(file) {
     // Rohfelder mitnehmen statt fertiges Front-/Back-HTML zu erzeugen.
     if (isMcShuffleNote(fieldsMap)) {
       parsedCards.push({
-        front: '', back: '', css: '',
+        front: '', back: '', css: '', tags: note.tags,
         mcData: {
           frage: insertMedia(fieldsMap['Frage'] || '', mediaUrls),
           options: ['A', 'B', 'C', 'D'].map(f => insertMedia(fieldsMap[f] || '', mediaUrls)),
@@ -701,9 +809,14 @@ async function parseApkg(file) {
     frontHtml = insertMedia(frontHtml, mediaUrls);
     backHtml = insertMedia(backHtml, mediaUrls);
 
+    // [zeichenfeld:datei.png] auf die entpackte Mediendatei umbiegen, solange
+    // die Zuordnung Dateiname -> Blob-URL noch bekannt ist.
+    frontHtml = resolveDrawTemplateMarker(frontHtml, mediaUrls);
+    backHtml = resolveDrawTemplateMarker(backHtml, mediaUrls);
+
     // Die CSS des Notiztyps wird mitgenommen, damit z.B. Multiple-Choice-Layouts,
     // Farben und Abstände wie im echten Anki dargestellt werden können.
-    parsedCards.push({ front: frontHtml, back: backHtml, css: model.css || '' });
+    parsedCards.push({ front: frontHtml, back: backHtml, css: model.css || '', tags: note.tags });
   }
 
   db.close();
@@ -714,6 +827,16 @@ function insertMedia(html, mediaUrls) {
   return html.replace(/src="([^"]+)"/g, (match, src) => {
     if (mediaUrls[src]) return `src="${mediaUrls[src]}"`;
     return match; // Bild fehlt: Original-Pfad belassen, kein Absturz
+  });
+}
+
+// [zeichenfeld:dateiname.png] -> [zeichenfeld:blob:...] . Ohne diesen Schritt
+// wäre der Dateiname nach dem Import nicht mehr auflösbar, weil im Karten-HTML
+// nur noch Blob-URLs stehen. Unbekannte Namen bleiben unverändert stehen.
+function resolveDrawTemplateMarker(html, mediaUrls) {
+  return (html || '').replace(/\[zeichenfeld\s*:\s*([^\]]+?)\s*\]/gi, (m, name) => {
+    const url = mediaUrls[name.trim()];
+    return url ? `[zeichenfeld:${url}]` : m;
   });
 }
 
@@ -994,12 +1117,39 @@ function openSettings() {
           <div class="setting-desc">Folgt der Einstellung des Geräts (hell am Tag, dunkel in der Nacht).</div>
         </div>
         <button class="switch ${auto ? 'on' : ''}" id="switch-auto" aria-label="Automatisch"></button>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="setting-label">✏️ Mit Finger zeichnen erlauben</div>
+          <div class="setting-desc">Normalerweise zeichnet nur der Apple Pencil — der Handballen erzeugt keine Striche. Am Rechner oder ohne Pencil hier einschalten.</div>
+        </div>
+        <button class="switch ${fingerDrawingEnabled() ? 'on' : ''}" id="switch-finger" aria-label="Mit Finger zeichnen"></button>
+      </div>
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="setting-label">📐 Formen automatisch begradigen</div>
+          <div class="setting-desc">Strich zeichnen, den Stift am Ende kurz gedrückt halten — Linie, Kreis, Rechteck oder Pfeil werden sauber gezogen und rasten auf Waagerechte, Senkrechte und 45° ein.</div>
+        </div>
+        <button class="switch ${straightenEnabled() ? 'on' : ''}" id="switch-straighten" aria-label="Formen begradigen"></button>
       </div>`,
     actions: [{ label: 'Fertig', class: 'primary' }]
   });
 
   const darkSwitch = document.getElementById('switch-dark');
   const autoSwitch = document.getElementById('switch-auto');
+
+  const fingerSwitch = document.getElementById('switch-finger');
+  fingerSwitch.addEventListener('click', () => {
+    const on = !fingerDrawingEnabled();
+    lsSet(DRAW_PREF.finger, on ? '1' : '0');
+    fingerSwitch.classList.toggle('on', on);
+  });
+  const straightenSwitch = document.getElementById('switch-straighten');
+  straightenSwitch.addEventListener('click', () => {
+    const on = !straightenEnabled();
+    lsSet(DRAW_PREF.straighten, on ? '1' : '0');
+    straightenSwitch.classList.toggle('on', on);
+  });
 
   function refresh() {
     const nowAuto = getThemePref() === 'auto';
@@ -1140,6 +1290,1000 @@ function adaptCardForDark(root) {
   });
 }
 
+/* =====================================================================
+   ZEICHENFELD (Apple Pencil)
+   =====================================================================
+   Eine Ergänzung zur Kartenansicht — der Abfrage-Ablauf, SM-2 und der
+   gespeicherte Lernfortschritt werden davon nicht berührt.
+
+   Das Feld erscheint automatisch, wenn eine dieser drei Bedingungen greift
+   (in dieser Reihenfolge geprüft, siehe detectDrawing):
+     1. Platzhalter [zeichenfeld] bzw. [zeichenfeld:bild.png] im Fragetext
+     2. Anki-Tag "zeichnen" an der Notiz
+     3. Fragetext beginnt mit einer Wendung aus DRAW_TEXT_PATTERNS
+   Zusätzlich lässt es sich mit dem Stift-Knopf unten rechts für die aktuelle
+   Karte manuell ein- und ausschalten.
+
+   Gezeichnet wird über Pointer Events auf einer transparenten Ebene ÜBER der
+   (optionalen) Bildvorlage — deshalb radiert der Radierer nie die Vorlage weg.
+   --------------------------------------------------------------------- */
+
+// Platzhalter im Kartentext. Optionaler Teil nach dem Doppelpunkt = Dateiname
+// der Bildvorlage.
+const DRAW_MARKER_RE = /\[zeichenfeld(?:\s*:\s*([^\]]+?))?\s*\]/i;
+const DRAW_MARKER_RE_G = /\[zeichenfeld(?:\s*:\s*([^\]]+?))?\s*\]/gi;
+
+// Anki-Tag, der eine Karte zur Zeichenkarte macht.
+const DRAW_TAG = 'zeichnen';
+
+// Rückfallebene: Fragen, die so BEGINNEN, gelten als Zeichenaufgabe.
+// Bewusst als Liste angelegt — hier lässt sich später einfach ergänzen.
+const DRAW_TEXT_PATTERNS = [
+  /^zeichne/i,
+  /^zeichnen\s+sie/i,
+  /^skizziere/i,
+  /^skizzieren\s+sie/i,
+  /^tragen\s+sie[\s\S]{0,120}?\bein\b/i,
+  /^beschriften\s+sie/i
+];
+
+// Die vier Formerkennungen lassen sich hier einzeln abschalten. Der Nutzer
+// schaltet über die Einstellungen das Begradigen als Ganzes an/aus.
+const SHAPE_RECOGNIZERS = { arrow: true, ellipse: true, rect: true, line: true };
+
+const DRAW_COLORS = [
+  { name: 'Schwarz', value: '#1c1c1c' },
+  { name: 'Blau',    value: '#2f6fd0' },
+  { name: 'Rot',     value: '#d0392f' },
+  { name: 'Grün',    value: '#2f8a53' },
+  { name: 'Orange',  value: '#e08324' }
+];
+const DRAW_WIDTHS = [1.5, 3, 6];          // dünn / mittel / dick
+const DRAW_HOLD_MS = 600;                 // so lange still halten -> begradigen
+const DRAW_HOLD_MOVE_PX = 4;              // "still" = weniger als das bewegt
+const DRAW_SNAP_DEG = 7;                  // Einrasten auf 0/45/90/135 Grad
+const DRAW_UNDO_LIMIT = 30;
+
+const DRAW_PREF = {
+  color: 'karteikarten-draw-color',
+  width: 'karteikarten-draw-width',
+  finger: 'karteikarten-draw-finger',
+  straighten: 'karteikarten-draw-straighten'
+};
+function lsGet(key, def) {
+  try { const v = localStorage.getItem(key); return v === null ? def : v; } catch (e) { return def; }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, value); } catch (e) { /* privater Modus */ }
+}
+function drawColorPref() {
+  const c = lsGet(DRAW_PREF.color, DRAW_COLORS[0].value);
+  return DRAW_COLORS.some(x => x.value === c) ? c : DRAW_COLORS[0].value;
+}
+function drawWidthPref() {
+  const w = parseFloat(lsGet(DRAW_PREF.width, String(DRAW_WIDTHS[1])));
+  return DRAW_WIDTHS.indexOf(w) !== -1 ? w : DRAW_WIDTHS[1];
+}
+function fingerDrawingEnabled() { return lsGet(DRAW_PREF.finger, '0') === '1'; }
+function straightenEnabled() { return lsGet(DRAW_PREF.straighten, '1') === '1'; }
+
+/* ---------- Erkennung: Ist das eine Zeichenkarte? ---------- */
+
+function cardFrontHtml(card) {
+  return card.mcData ? (card.mcData.frage || '') : (card.front || '');
+}
+function cardBackHtml(card) {
+  return card.mcData ? (card.mcData.richtigText || '') : (card.back || '');
+}
+// HTML -> Klartext (Entities aufgelöst, Leerraum normalisiert)
+function htmlToPlainText(html) {
+  const d = document.createElement('div');
+  d.innerHTML = html || '';
+  return (d.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+function detectDrawing(card) {
+  const html = cardFrontHtml(card);
+  // 1. Platzhalter im Kartentext
+  const m = DRAW_MARKER_RE.exec(html);
+  if (m) return { on: true, reason: 'marker', template: (m[1] || '').trim() || null };
+  // 2. Anki-Tag
+  const tags = String(card.tags || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (tags.indexOf(DRAW_TAG) !== -1) return { on: true, reason: 'tag', template: null };
+  // 3. Texterkennung als Rückfallebene
+  const text = htmlToPlainText(html);
+  if (text && DRAW_TEXT_PATTERNS.some(re => re.test(text))) {
+    return { on: true, reason: 'text', template: null };
+  }
+  return { on: false, reason: null, template: null };
+}
+
+// Ersetzt den Platzhalter durch den Ankerpunkt für das Zeichenfeld. Steht kein
+// Platzhalter im Text, kommt der Anker ans Ende — dann greift auch der manuelle
+// Stift-Knopf auf jeder beliebigen Karte.
+function withDrawAnchor(frontHtml) {
+  if (DRAW_MARKER_RE.test(frontHtml)) {
+    return frontHtml.replace(DRAW_MARKER_RE, '<div id="draw-anchor"></div>');
+  }
+  return frontHtml + '<div id="draw-anchor"></div>';
+}
+// Auf der Rückseite (die per {{FrontSide}} oft die Frage enthält) hat der
+// Platzhalter nichts verloren.
+function stripDrawMarker(html) {
+  return (html || '').replace(DRAW_MARKER_RE_G, '');
+}
+
+/* ---------- Zustand ---------- */
+
+let drawField = null;          // aktives Zeichenfeld oder null
+let drawManualToggle = null;   // { cardId, on } — manuelle Übersteuerung je Karte
+
+/* ---------- Aufbau / Abbau ---------- */
+
+function destroyDrawField() {
+  if (drawField) {
+    clearTimeout(drawField.holdTimer);
+    clearTimeout(drawField.flashTimer);
+    window.removeEventListener('resize', drawField.onResize);
+    window.removeEventListener('orientationchange', drawField.onResize);
+    drawField = null;
+  }
+  const fab = document.getElementById('draw-pen-fab');
+  if (fab) fab.remove();
+  const block = document.getElementById('draw-block');
+  if (block) block.remove();
+  // Bild, das als Vorlage ins Canvas gewandert war, wieder im Kartentext zeigen
+  document.querySelectorAll('img[data-draw-template]').forEach(img => img.removeAttribute('data-draw-template'));
+}
+
+// Wird am Ende jeder Kartenansicht aufgerufen. Ohne Zeichenkarte passiert außer
+// dem Stift-Knopf nichts — normale Karten verhalten sich exakt wie vorher.
+function setupDrawingForCard(card) {
+  destroyDrawField();
+  if (!card) return;
+  const det = detectDrawing(card);
+  let on = det.on;
+  if (drawManualToggle && drawManualToggle.cardId === card.id) on = drawManualToggle.on;
+
+  addDrawPenFab(card, on);
+  if (!on) return;
+  buildDrawField(card, det);
+}
+
+function addDrawPenFab(card, on) {
+  const main = document.querySelector('main');
+  if (!main) return;
+  const btn = document.createElement('button');
+  btn.id = 'draw-pen-fab';
+  btn.className = 'draw-pen-fab' + (on ? ' active' : '');
+  btn.title = on ? 'Zeichenfeld ausblenden' : 'Zeichenfeld einblenden';
+  btn.textContent = '✏️';
+  btn.addEventListener('click', () => {
+    drawManualToggle = { cardId: card.id, on: !on };
+    setupDrawingForCard(card);
+    // Beim Einblenden auf der Rückseite muss das Feld dorthin, wo man es sieht.
+    const backWrap = document.getElementById('card-back-wrap');
+    updateDrawForFace(!!backWrap && backWrap.style.display === 'block');
+  });
+  main.appendChild(btn);
+}
+
+function buildDrawField(card, det) {
+  const anchor = document.getElementById('draw-anchor');
+  if (!anchor) return;
+
+  const color = drawColorPref();
+  const width = drawWidthPref();
+
+  const colorsHtml = DRAW_COLORS.map(c =>
+    `<button class="draw-btn draw-color${c.value === color ? ' active' : ''}" data-color="${c.value}" title="${c.name}" aria-label="${c.name}"><span class="dot" style="background:${c.value}"></span></button>`
+  ).join('');
+  const sizesHtml = DRAW_WIDTHS.map((w, i) => {
+    const px = 7 + i * 5;
+    return `<button class="draw-btn draw-size${w === width ? ' active' : ''}" data-width="${w}" title="Linienstärke ${['dünn','mittel','dick'][i]}"><span class="dot" style="width:${px}px;height:${px}px"></span></button>`;
+  }).join('');
+
+  const block = document.createElement('div');
+  block.className = 'draw-block';
+  block.id = 'draw-block';
+  block.innerHTML = `
+    <div class="draw-toolbar">
+      ${colorsHtml}
+      <span class="sep"></span>
+      ${sizesHtml}
+      <span class="sep"></span>
+      <button class="draw-btn" id="draw-eraser" title="Radierer">🧽</button>
+      <button class="draw-btn" id="draw-undo" title="Rückgängig" disabled>↺</button>
+      <button class="draw-btn" id="draw-redo" title="Wiederherstellen" disabled>↻</button>
+      <button class="draw-btn danger" id="draw-clear" title="Alles löschen">🗑</button>
+    </div>
+    <div class="draw-stack" id="draw-stack">
+      <img class="draw-layer draw-template" id="draw-template" alt="">
+      <img class="draw-layer draw-prev" id="draw-prev" alt="">
+      <canvas class="draw-canvas" id="draw-canvas"></canvas>
+      <img class="draw-layer draw-solution" id="draw-solution" alt="">
+    </div>
+    <div class="draw-actions">
+      <button class="draw-solve-btn" id="draw-solve">Lösung zeigen</button>
+      <button class="draw-mini-btn" id="draw-keep">💾 Skizze behalten</button>
+      <button class="draw-mini-btn" id="draw-prev-toggle" style="display:none">👁 letzte Skizze einblenden</button>
+    </div>
+    <div class="draw-overlay-row" id="draw-overlay-row" style="display:none">
+      <button class="draw-mini-btn" id="draw-overlay-toggle">🔍 Überblenden</button>
+      <input type="range" id="draw-overlay-opacity" min="10" max="100" value="50" title="Transparenz der Überblendung">
+    </div>
+    <div class="draw-hint">Mit dem Apple Pencil zeichnen. Am Ende eines Strichs kurz gedrückt halten — die Form wird begradigt.</div>
+  `;
+  anchor.appendChild(block);
+
+  // Innerhalb des Zeichenfelds darf der Doppeltipp die Karte nicht umdrehen.
+  block.addEventListener('click', (e) => e.stopPropagation());
+
+  const canvas = block.querySelector('#draw-canvas');
+  const f = {
+    card, canvas, ctx: null, dpr: 1, cssW: 0, cssH: 0,
+    color, width,
+    eraser: false,
+    drawing: false, activeId: null, pen: false,
+    points: [], base: null, recognized: null,
+    holdAnchor: null, holdTimer: null, flashTimer: null,
+    undo: [], redo: [],
+    overlayOn: false,
+    onResize: null
+  };
+  drawField = f;
+
+  f.onResize = () => fitDrawCanvas(f);
+  window.addEventListener('resize', f.onResize);
+  window.addEventListener('orientationchange', f.onResize);
+  requestAnimationFrame(() => { if (drawField === f) fitDrawCanvas(f); });
+
+  wireDrawToolbar(f, block);
+  wireDrawPointer(f);
+  setupDrawLayers(f, det);
+  loadStoredSketch(f);
+
+  // Auf Zeichenkarten übernimmt der Knopf das Aufdecken.
+  const hint = document.getElementById('tap-hint');
+  if (hint) hint.textContent = 'Doppeltipp außerhalb des Zeichenfelds dreht die Karte um';
+}
+
+// Bildvorlage und Lösungsbild bestimmen.
+function setupDrawLayers(f, det) {
+  const frontEl = document.getElementById('card-front');
+  const tplImg = document.getElementById('draw-template');
+  let src = null;
+
+  if (det.template) {
+    src = resolveTemplateSrc(det.template, frontEl);
+  } else if (frontEl) {
+    // Genau ein Bild auf der Vorderseite -> das ist die Vorlage.
+    const imgs = cardImagesIn(frontEl);
+    if (imgs.length === 1) {
+      src = imgs[0].getAttribute('src');
+      imgs[0].setAttribute('data-draw-template', '');  // im Text ausblenden
+    }
+  }
+  f.templateSrc = src || null;
+  if (src && tplImg) {
+    tplImg.addEventListener('error', () => { tplImg.style.display = 'none'; });
+    tplImg.src = src;
+  }
+
+  // Lösungsbild für die Überblendung: erstes Bild der Rückseite, das nicht die
+  // Vorlage selbst ist (die Rückseite enthält per {{FrontSide}} oft die Frage).
+  const solImg = document.getElementById('draw-solution');
+  const backHtml = cardBackHtml(f.card) || (f.card.mcData ? f.card.mcData.erklaerung : '');
+  const holder = document.createElement('div');
+  holder.innerHTML = stripDrawMarker(backHtml || '');
+  for (const img of holder.querySelectorAll('img')) {
+    const s = img.getAttribute('src');
+    if (!s || s === f.templateSrc) continue;
+    f.solutionSrc = s;
+    if (solImg) solImg.src = s;
+    break;
+  }
+}
+
+// Bilder des Kartentextes — die Ebenen des Zeichenfelds selbst liegen ebenfalls
+// innerhalb von #card-front (der Anker steht ja mitten im Text) und dürfen hier
+// nicht mitgezählt werden.
+function cardImagesIn(root) {
+  return Array.from(root.querySelectorAll('img')).filter(img => !img.closest('.draw-stack'));
+}
+
+function resolveTemplateSrc(spec, frontEl) {
+  if (!spec) return null;
+  if (/^(blob:|data:|https?:|\.|\/)/i.test(spec)) return spec;
+  // Nur ein Dateiname: passendes <img> auf der Karte suchen
+  if (frontEl) {
+    const imgs = cardImagesIn(frontEl);
+    for (const img of imgs) {
+      const s = img.getAttribute('src') || '';
+      if (s === spec || s.endsWith('/' + spec) || s.endsWith(spec)) {
+        img.setAttribute('data-draw-template', '');
+        return s;
+      }
+    }
+  }
+  return spec; // relativer Pfad — kann klappen, sonst greift onerror
+}
+
+/* ---------- Canvas in Geräteauflösung ---------- */
+
+function fitDrawCanvas(f) {
+  const rect = f.canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const w = Math.max(1, Math.round(rect.width * dpr));
+  const h = Math.max(1, Math.round(rect.height * dpr));
+  if (f.canvas.width === w && f.canvas.height === h) return;
+
+  // Vorhandene Zeichnung beim Größenwechsel (z.B. Drehen des iPads) mitnehmen
+  let old = null;
+  if (f.canvas.width && f.canvas.height) {
+    old = document.createElement('canvas');
+    old.width = f.canvas.width; old.height = f.canvas.height;
+    old.getContext('2d').drawImage(f.canvas, 0, 0);
+  }
+  f.canvas.width = w;
+  f.canvas.height = h;
+  const ctx = f.canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // ab jetzt in CSS-Pixeln rechnen
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if (old) ctx.drawImage(old, 0, 0, rect.width, rect.height);
+  f.ctx = ctx; f.dpr = dpr; f.cssW = rect.width; f.cssH = rect.height;
+}
+
+/* ---------- Werkzeugleiste ---------- */
+
+function wireDrawToolbar(f, block) {
+  block.querySelectorAll('[data-color]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      f.color = btn.dataset.color;
+      lsSet(DRAW_PREF.color, f.color);
+      block.querySelectorAll('[data-color]').forEach(b => b.classList.toggle('active', b === btn));
+      setEraser(f, false);
+    });
+  });
+  block.querySelectorAll('[data-width]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      f.width = parseFloat(btn.dataset.width);
+      lsSet(DRAW_PREF.width, String(f.width));
+      block.querySelectorAll('[data-width]').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
+  block.querySelector('#draw-eraser').addEventListener('click', () => setEraser(f, !f.eraser));
+  block.querySelector('#draw-undo').addEventListener('click', () => drawUndo(f));
+  block.querySelector('#draw-redo').addEventListener('click', () => drawRedo(f));
+  block.querySelector('#draw-clear').addEventListener('click', () => confirmDrawClear(f));
+
+  block.querySelector('#draw-solve').addEventListener('click', () => toggleCardFace());
+  block.querySelector('#draw-keep').addEventListener('click', () => keepSketch(f));
+  block.querySelector('#draw-prev-toggle').addEventListener('click', () => togglePrevSketch(f));
+
+  block.querySelector('#draw-overlay-toggle').addEventListener('click', () => toggleSolutionOverlay(f));
+  block.querySelector('#draw-overlay-opacity').addEventListener('input', (e) => {
+    const sol = document.getElementById('draw-solution');
+    if (sol) sol.style.opacity = String(parseInt(e.target.value, 10) / 100);
+  });
+}
+
+function setEraser(f, on) {
+  f.eraser = on;
+  const btn = document.getElementById('draw-eraser');
+  if (btn) btn.classList.toggle('eraser-on', on);
+}
+
+function updateUndoButtons(f) {
+  const u = document.getElementById('draw-undo');
+  const r = document.getElementById('draw-redo');
+  if (u) u.disabled = f.undo.length === 0;
+  if (r) r.disabled = f.redo.length === 0;
+}
+
+function confirmDrawClear(f) {
+  showModal({
+    title: 'Zeichnung löschen?',
+    body: 'Die aktuelle Zeichnung wird vollständig entfernt. Die Bildvorlage bleibt erhalten.',
+    actions: [
+      { label: 'Abbrechen', class: 'secondary' },
+      { label: 'Ja, löschen', class: 'primary', onClick: () => {
+          pushUndoState(f, snapshotDataUrl(f));
+          clearDrawCanvas(f);
+          closeModal();
+        } }
+    ]
+  });
+}
+
+function clearDrawCanvas(f) {
+  const ctx = f.ctx; if (!ctx) return;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, f.canvas.width, f.canvas.height);
+  ctx.restore();
+}
+
+/* ---------- Rückgängig / Wiederherstellen (strichweise) ---------- */
+
+function snapshotDataUrl(f) {
+  try { return f.canvas.toDataURL('image/png'); } catch (e) { return null; }
+}
+function pushUndoState(f, dataUrl) {
+  if (!dataUrl) return;
+  f.undo.push(dataUrl);
+  if (f.undo.length > DRAW_UNDO_LIMIT) f.undo.shift();
+  f.redo.length = 0;
+  updateUndoButtons(f);
+}
+function restoreDataUrl(f, dataUrl) {
+  if (!dataUrl) { clearDrawCanvas(f); return; }
+  const img = new Image();
+  img.onload = () => {
+    if (drawField !== f) return;
+    const ctx = f.ctx;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, f.canvas.width, f.canvas.height);
+    ctx.drawImage(img, 0, 0, f.canvas.width, f.canvas.height);
+    ctx.restore();
+  };
+  img.src = dataUrl;
+}
+function drawUndo(f) {
+  if (!f.undo.length) return;
+  const cur = snapshotDataUrl(f);
+  if (cur) f.redo.push(cur);
+  restoreDataUrl(f, f.undo.pop());
+  updateUndoButtons(f);
+}
+function drawRedo(f) {
+  if (!f.redo.length) return;
+  const cur = snapshotDataUrl(f);
+  if (cur) { f.undo.push(cur); if (f.undo.length > DRAW_UNDO_LIMIT) f.undo.shift(); }
+  restoreDataUrl(f, f.redo.pop());
+  updateUndoButtons(f);
+}
+
+/* ---------- Eingabe (Pointer Events) ---------- */
+
+// Handballen-Erkennung: es zeichnet nur der Stift. Finger-Eingaben erzeugen
+// keine Striche (außer der Nutzer erlaubt es in den Einstellungen).
+function isDrawInput(e) {
+  if (e.pointerType === 'pen') return true;
+  if (e.pointerType === 'mouse') return true;           // Test am Rechner
+  return e.pointerType === 'touch' && fingerDrawingEnabled();
+}
+
+function drawPointOf(f, ev) {
+  const r = f.canvas.getBoundingClientRect();
+  const x = ev.clientX - r.left;
+  const y = ev.clientY - r.top;
+  let w = f.width;
+  const p = ev.pressure;
+  // Ohne echte Druckdaten (0 oder konstant 0.5) bleibt es bei der Grundstärke.
+  if (f.pen && typeof p === 'number' && p > 0 && Math.abs(p - 0.5) > 0.001) {
+    w = f.width * (0.4 + 0.9 * Math.min(1, p));
+  }
+  return { x, y, w };
+}
+
+function wireDrawPointer(f) {
+  const c = f.canvas;
+
+  // Das Canvas hat touch-action:none, damit iPadOS beim Zeichnen nicht scrollt
+  // oder zoomt. Damit man die Seite trotzdem mit dem Finger bewegen kann, wird
+  // eine Finger-Bewegung auf der Zeichenfläche als Scrollen weitergereicht,
+  // solange "Mit Finger zeichnen" aus ist. Der Handballen erzeugt so weder
+  // Striche noch überraschende Sprünge.
+  let panId = null, panLastY = 0;
+
+  c.addEventListener('pointerdown', (e) => {
+    if (!isDrawInput(e)) {
+      if (e.pointerType === 'touch') { panId = e.pointerId; panLastY = e.clientY; }
+      return;                         // Handballen/Finger: keine Striche
+    }
+    if (!f.ctx) fitDrawCanvas(f);
+    if (!f.ctx) return;
+    e.preventDefault();
+    try { c.setPointerCapture(e.pointerId); } catch (err) { /* egal */ }
+    f.activeId = e.pointerId;
+    f.pen = e.pointerType === 'pen';
+    f.drawing = true;
+    f.recognized = null;
+    // Zustand vor dem Strich sichern — Grundlage für Begradigen und Rückgängig
+    f.base = document.createElement('canvas');
+    f.base.width = f.canvas.width; f.base.height = f.canvas.height;
+    f.base.getContext('2d').drawImage(f.canvas, 0, 0);
+    const p = drawPointOf(f, e);
+    f.points = [p];
+    f.holdAnchor = p;
+    armHoldTimer(f);
+  });
+
+  c.addEventListener('pointermove', (e) => {
+    if (e.pointerId === panId) {
+      window.scrollBy(0, panLastY - e.clientY);
+      panLastY = e.clientY;
+      return;
+    }
+    if (!f.drawing || e.pointerId !== f.activeId) return;
+    e.preventDefault();
+    // getCoalescedEvents liefert die Zwischenpunkte des Pencils -> glattere Striche
+    const evts = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
+    for (const ev of evts) addDrawPoint(f, drawPointOf(f, ev));
+  });
+
+  const finish = (e) => {
+    if (e && e.pointerId === panId) { panId = null; return; }
+    if (!f.drawing || (e && e.pointerId !== f.activeId)) return;
+    clearTimeout(f.holdTimer);
+    f.drawing = false;
+    f.activeId = null;
+    if (f.recognized) {
+      // Begradigte Form endgültig übernehmen. Das muss auch dann sauber
+      // aussehen, wenn der Stift noch während der Aufhell-Animation abgehoben
+      // wird — sonst bliebe der helle Blitz stehen.
+      clearTimeout(f.flashTimer);
+      restoreBase(f);
+      drawShape(f, f.recognized, { color: f.color, width: f.width });
+    } else if (f.points.length === 1) {
+      drawDot(f, f.points[0]);
+    } else {
+      drawStrokeTail(f);
+    }
+    if (f.base) pushUndoState(f, f.base.toDataURL('image/png'));
+    f.base = null;
+    f.recognized = null;
+    f.points = [];
+  };
+  c.addEventListener('pointerup', finish);
+  c.addEventListener('pointercancel', (e) => {
+    if (e && e.pointerId === panId) { panId = null; return; }
+    clearTimeout(f.holdTimer);
+    clearTimeout(f.flashTimer);
+    if (!f.drawing) return;
+    // Abbruch (z.B. Systemgeste): Strich verwerfen, Ausgangszustand herstellen
+    f.drawing = false; f.activeId = null; f.recognized = null; f.points = [];
+    if (f.base) { restoreBase(f); f.base = null; }
+  });
+}
+
+function addDrawPoint(f, p) {
+  f.points.push(p);
+  drawSegment(f, f.points.length - 1);
+  // Bewegt sich der Stift wieder deutlich, wird eine erkannte Form verworfen
+  // und der Strich läuft normal weiter.
+  if (dist2(p, f.holdAnchor) > DRAW_HOLD_MOVE_PX * DRAW_HOLD_MOVE_PX) {
+    f.holdAnchor = p;
+    if (f.recognized) {
+      f.recognized = null;
+      clearTimeout(f.flashTimer);
+      replayStroke(f);
+    }
+    armHoldTimer(f);
+  }
+}
+
+function applyStrokeStyle(f, w) {
+  const ctx = f.ctx;
+  if (f.eraser) {
+    // Radiert nur auf der Zeichenebene — die Vorlage liegt darunter im <img>.
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.strokeStyle = 'rgba(0,0,0,1)';
+    ctx.fillStyle = 'rgba(0,0,0,1)';
+    ctx.lineWidth = Math.max(4, f.width * 4);
+  } else {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = f.color;
+    ctx.fillStyle = f.color;
+    ctx.lineWidth = w;
+  }
+}
+
+// Glättung: quadratische Bézier-Kurven durch die Mittelpunkte aufeinander-
+// folgender Rohpunkte — sonst sehen schnelle Striche eckig aus.
+function drawSegment(f, i) {
+  const ctx = f.ctx, pts = f.points;
+  if (!ctx || i < 1) return;
+  const p0 = pts[i - 1], p1 = pts[i];
+  const prevMid = i >= 2 ? midPoint(pts[i - 2], p0) : p0;
+  const curMid = midPoint(p0, p1);
+  ctx.save();
+  applyStrokeStyle(f, (p0.w + p1.w) / 2);
+  ctx.beginPath();
+  ctx.moveTo(prevMid.x, prevMid.y);
+  ctx.quadraticCurveTo(p0.x, p0.y, curMid.x, curMid.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// Letztes Stück vom Mittelpunkt bis zum echten Endpunkt
+function drawStrokeTail(f) {
+  const pts = f.points;
+  if (pts.length < 2 || !f.ctx) return;
+  const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+  const ctx = f.ctx;
+  ctx.save();
+  applyStrokeStyle(f, last.w);
+  ctx.beginPath();
+  ctx.moveTo(midPoint(prev, last).x, midPoint(prev, last).y);
+  ctx.lineTo(last.x, last.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawDot(f, p) {
+  const ctx = f.ctx; if (!ctx) return;
+  ctx.save();
+  applyStrokeStyle(f, p.w);
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, Math.max(0.6, (f.eraser ? f.width * 4 : p.w) / 2), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function restoreBase(f) {
+  if (!f.base || !f.ctx) return;
+  const ctx = f.ctx;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, f.canvas.width, f.canvas.height);
+  ctx.drawImage(f.base, 0, 0);
+  ctx.restore();
+}
+
+function replayStroke(f) {
+  restoreBase(f);
+  for (let i = 1; i < f.points.length; i++) drawSegment(f, i);
+}
+
+/* ---------- Automatisches Begradigen ---------- */
+
+function armHoldTimer(f) {
+  clearTimeout(f.holdTimer);
+  if (!straightenEnabled() || f.eraser) return;
+  f.holdTimer = setTimeout(() => tryRecognizeShape(f), DRAW_HOLD_MS);
+}
+
+function tryRecognizeShape(f) {
+  if (!f.drawing || f.recognized || f.points.length < 4) return;
+  const shape = recognizeShape(f.points);
+  if (!shape) return;
+  f.recognized = shape;
+  restoreBase(f);
+  drawShape(f, shape, { color: f.color, width: f.width });
+  // Kurzes haptisches Signal, falls das Gerät es kann …
+  if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) { /* egal */ } }
+  // … auf iPadOS wirkungslos, deshalb zusätzlich kurz aufblitzen lassen.
+  flashShape(f, shape);
+}
+
+function flashShape(f, shape) {
+  drawShape(f, shape, { color: '#ffcf5c', width: f.width * 2.4, alpha: .85 });
+  clearTimeout(f.flashTimer);
+  f.flashTimer = setTimeout(() => {
+    if (drawField !== f || f.recognized !== shape) return;
+    restoreBase(f);
+    drawShape(f, shape, { color: f.color, width: f.width });
+  }, 150);
+}
+
+// Reihenfolge: Pfeil, Rechteck, Ellipse, Linie — von der engsten zur
+// großzügigsten Erkennung. Die Linie muss zuletzt kommen, sonst würde sie jede
+// geschlossene Form schlucken; das Rechteck steht vor der Ellipse, weil ein
+// Kreis die Rechteck-Prüfung sicher nicht besteht (seine Punkte liegen in den
+// Diagonalbereichen weit von jeder Kante entfernt), umgekehrt aber ein Rechteck
+// einer sehr weichen Ellipsen-Prüfung durchrutschen könnte.
+function recognizeShape(pts) {
+  if (SHAPE_RECOGNIZERS.arrow)   { const s = recognizeArrow(pts);   if (s) return s; }
+  if (SHAPE_RECOGNIZERS.rect)    { const s = recognizeRect(pts);    if (s) return s; }
+  if (SHAPE_RECOGNIZERS.ellipse) { const s = recognizeEllipse(pts); if (s) return s; }
+  if (SHAPE_RECOGNIZERS.line)    { const s = recognizeLine(pts);    if (s) return s; }
+  return null;
+}
+
+/* Hauptfall: gerade Linie zwischen Anfangs- und Endpunkt. Liegt der Winkel
+   innerhalb von 7 Grad zur Waagerechten, Senkrechten oder einer 45-Grad-
+   Diagonalen, rastet er exakt darauf ein. */
+function recognizeLine(pts) {
+  const a = pts[0], b = pts[pts.length - 1];
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (len < 18) return null;
+  const ang = Math.atan2(b.y - a.y, b.x - a.x);
+  const step = Math.PI / 4;
+  const snapped = Math.round(ang / step) * step;
+  const diffDeg = Math.abs(angleDiff(ang, snapped)) * 180 / Math.PI;
+  const end = diffDeg <= DRAW_SNAP_DEG
+    ? { x: a.x + Math.cos(snapped) * len, y: a.y + Math.sin(snapped) * len }
+    : { x: b.x, y: b.y };
+  return { type: 'line', a: { x: a.x, y: a.y }, b: end, snapped: diffDeg <= DRAW_SNAP_DEG };
+}
+
+/* Kreis/Ellipse: Pfad annähernd geschlossen und die Abstände zum Mittelpunkt
+   (auf die Bounding-Box normiert) annähernd gleich. */
+function recognizeEllipse(pts) {
+  const bb = boundsOf(pts);
+  if (bb.w < 26 || bb.h < 26) return null;
+  if (Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y)
+      > 0.32 * Math.max(bb.w, bb.h)) return null;
+  const cx = bb.x + bb.w / 2, cy = bb.y + bb.h / 2, rx = bb.w / 2, ry = bb.h / 2;
+  let sum = 0, sum2 = 0;
+  for (const p of pts) {
+    const k = Math.hypot((p.x - cx) / rx, (p.y - cy) / ry);
+    sum += k; sum2 += k * k;
+  }
+  const n = pts.length, mean = sum / n;
+  const sd = Math.sqrt(Math.max(0, sum2 / n - mean * mean));
+  // Beim Kreis/der Ellipse liegt k für jeden Punkt bei 1. Ein Rechteck käme auf
+  // Mittelwert ≈ 1.15 und Streuung ≈ 0.13 (die Ecken liegen bei √2) — die
+  // Schranken sind bewusst so eng, dass es hier nicht durchrutscht.
+  if (mean < 0.88 || mean > 1.12 || sd > 0.10) return null;
+  return { type: 'ellipse', cx, cy, rx, ry };
+}
+
+/* Rechteck: geschlossener Pfad, dessen Punkte fast alle nah an einer der vier
+   achsparallelen Kanten der Bounding-Box liegen — und jede Kante kommt vor. */
+function recognizeRect(pts) {
+  const bb = boundsOf(pts);
+  const minSide = Math.min(bb.w, bb.h);
+  if (minSide < 26) return null;
+  if (Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y)
+      > 0.32 * Math.max(bb.w, bb.h)) return null;
+  const tol = Math.max(6, 0.06 * minSide);
+  const edges = [0, 0, 0, 0];
+  let near = 0;
+  for (const p of pts) {
+    const d = [
+      Math.abs(p.y - bb.y),              // oben
+      Math.abs(p.x - (bb.x + bb.w)),     // rechts
+      Math.abs(p.y - (bb.y + bb.h)),     // unten
+      Math.abs(p.x - bb.x)               // links
+    ];
+    let mi = 0;
+    for (let i = 1; i < 4; i++) if (d[i] < d[mi]) mi = i;
+    if (d[mi] <= tol) { near++; edges[mi]++; }
+  }
+  if (near / pts.length < 0.85) return null;
+  if (edges.some(e => e / pts.length < 0.08)) return null;
+  return { type: 'rect', x: bb.x, y: bb.y, w: bb.w, h: bb.h };
+}
+
+/* Pfeil: im Wesentlichen gerader Körper, am Ende eine kurze Zickzack-Bewegung
+   (mindestens zwei scharfe Richtungswechsel). Bewusst streng, damit eine
+   normale Linie mit zappeligem Ende nicht fälschlich zum Pfeil wird. */
+function recognizeArrow(pts) {
+  const rs = resamplePath(pts, 6);
+  if (rs.length < 10) return null;
+  const total = pathLength(rs);
+  if (total < 70) return null;
+
+  const dirs = [];
+  for (let i = 1; i < rs.length; i++) dirs.push(Math.atan2(rs[i].y - rs[i - 1].y, rs[i].x - rs[i - 1].x));
+
+  // Länge ab Punkt i bis zum Ende
+  const tailLen = new Array(rs.length).fill(0);
+  for (let i = rs.length - 2; i >= 0; i--) {
+    tailLen[i] = tailLen[i + 1] + Math.hypot(rs[i + 1].x - rs[i].x, rs[i + 1].y - rs[i].y);
+  }
+
+  let turns = 0, firstTurn = -1;
+  for (let i = 1; i < dirs.length; i++) {
+    if (tailLen[i] > 0.45 * total) continue;           // nur das Ende betrachten
+    if (Math.abs(angleDiff(dirs[i], dirs[i - 1])) > 70 * Math.PI / 180) {
+      turns++;
+      if (firstTurn === -1) firstTurn = i;
+    }
+  }
+  if (turns < 2 || firstTurn === -1) return null;
+
+  const tip = rs[firstTurn];
+  const zigzag = tailLen[firstTurn];
+  if (zigzag < 0.08 * total || zigzag > 0.45 * total) return null;
+
+  const bodyLen = total - zigzag;
+  if (bodyLen < 40) return null;
+  // Körper muss gerade sein
+  let maxDev = 0;
+  for (let i = 0; i <= firstTurn; i++) maxDev = Math.max(maxDev, distToLine(rs[i], rs[0], tip));
+  if (maxDev > Math.max(6, 0.12 * bodyLen)) return null;
+
+  const a = { x: rs[0].x, y: rs[0].y };
+  return { type: 'arrow', a, b: snapEndpoint(a, tip) };
+}
+
+// Gleiches Einrasten wie bei der geraden Linie
+function snapEndpoint(a, b) {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const ang = Math.atan2(b.y - a.y, b.x - a.x);
+  const step = Math.PI / 4;
+  const snapped = Math.round(ang / step) * step;
+  if (Math.abs(angleDiff(ang, snapped)) * 180 / Math.PI <= DRAW_SNAP_DEG) {
+    return { x: a.x + Math.cos(snapped) * len, y: a.y + Math.sin(snapped) * len };
+  }
+  return { x: b.x, y: b.y };
+}
+
+function drawShape(f, shape, style) {
+  const ctx = f.ctx; if (!ctx) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = style.color;
+  ctx.lineWidth = style.width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if (style.alpha != null) ctx.globalAlpha = style.alpha;
+  ctx.beginPath();
+  if (shape.type === 'line' || shape.type === 'arrow') {
+    ctx.moveTo(shape.a.x, shape.a.y);
+    ctx.lineTo(shape.b.x, shape.b.y);
+    ctx.stroke();
+    if (shape.type === 'arrow') {
+      const ang = Math.atan2(shape.b.y - shape.a.y, shape.b.x - shape.a.x);
+      const len = Math.hypot(shape.b.x - shape.a.x, shape.b.y - shape.a.y);
+      const hl = Math.max(12, Math.min(30, len * 0.18));
+      const spread = Math.PI / 7;
+      ctx.beginPath();
+      ctx.moveTo(shape.b.x - Math.cos(ang - spread) * hl, shape.b.y - Math.sin(ang - spread) * hl);
+      ctx.lineTo(shape.b.x, shape.b.y);
+      ctx.lineTo(shape.b.x - Math.cos(ang + spread) * hl, shape.b.y - Math.sin(ang + spread) * hl);
+      ctx.stroke();
+    }
+  } else if (shape.type === 'ellipse') {
+    ctx.ellipse(shape.cx, shape.cy, shape.rx, shape.ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (shape.type === 'rect') {
+    ctx.rect(shape.x, shape.y, shape.w, shape.h);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ---------- kleine Geometrie-Helfer ---------- */
+
+function midPoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+function dist2(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return dx * dx + dy * dy; }
+function angleDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+}
+function boundsOf(pts) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pts) {
+    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+function pathLength(pts) {
+  let l = 0;
+  for (let i = 1; i < pts.length; i++) l += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  return l;
+}
+function distToLine(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return Math.hypot(p.x - a.x, p.y - a.y);
+  return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len;
+}
+// Gleichmäßig verteilte Punkte — macht die Richtungsauswertung beim Pfeil
+// unabhängig von der Zeichengeschwindigkeit.
+function resamplePath(pts, step) {
+  if (pts.length < 2) return pts.slice();
+  const out = [{ x: pts[0].x, y: pts[0].y }];
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    let a = out[out.length - 1];
+    let b = pts[i];
+    let d = Math.hypot(b.x - a.x, b.y - a.y);
+    while (acc + d >= step) {
+      const t = (step - acc) / d;
+      const np = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      out.push(np);
+      a = np;
+      d = Math.hypot(b.x - a.x, b.y - a.y);
+      acc = 0;
+    }
+    acc += d;
+  }
+  const last = pts[pts.length - 1];
+  const tail = out[out.length - 1];
+  if (Math.hypot(last.x - tail.x, last.y - tail.y) > 0.5) out.push({ x: last.x, y: last.y });
+  return out;
+}
+
+/* ---------- Skizze behalten / letzte Skizze einblenden ---------- */
+
+// Standardverhalten bleibt: beim Weiterblättern ist die Zeichnung weg. Nur auf
+// ausdrücklichen Knopfdruck wandert sie als PNG in die Datenbank — höchstens
+// eine pro Karte (die jeweils neueste).
+async function keepSketch(f) {
+  if (!f.card || f.card.id == null) { showToast('Diese Karte kann keine Skizze speichern'); return; }
+  const dataUrl = downscaleCanvas(f.canvas, 900);
+  if (!dataUrl) { showToast('Skizze konnte nicht gespeichert werden'); return; }
+  try {
+    await Store.saveSketch(f.card.id, dataUrl);
+    f.storedSketch = dataUrl;
+    const btn = document.getElementById('draw-prev-toggle');
+    if (btn) btn.style.display = '';
+    showToast('Skizze gespeichert — beim nächsten Mal einblendbar');
+  } catch (e) {
+    showToast('Skizze konnte nicht gespeichert werden');
+  }
+}
+
+function downscaleCanvas(canvas, maxW) {
+  try {
+    if (canvas.width <= maxW) return canvas.toDataURL('image/png');
+    const scale = maxW / canvas.width;
+    const c = document.createElement('canvas');
+    c.width = Math.round(canvas.width * scale);
+    c.height = Math.round(canvas.height * scale);
+    c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+    return c.toDataURL('image/png');
+  } catch (e) { return null; }
+}
+
+async function loadStoredSketch(f) {
+  if (!f.card || f.card.id == null) return;
+  let rec = null;
+  try { rec = await Store.getSketch(f.card.id); } catch (e) { rec = null; }
+  if (!rec || drawField !== f) return;
+  f.storedSketch = rec.dataUrl;
+  const btn = document.getElementById('draw-prev-toggle');
+  if (btn) btn.style.display = '';
+}
+
+function togglePrevSketch(f) {
+  const img = document.getElementById('draw-prev');
+  const btn = document.getElementById('draw-prev-toggle');
+  if (!img || !f.storedSketch) return;
+  const visible = img.style.display === 'block';
+  if (visible) {
+    img.style.display = 'none';
+    btn.textContent = '👁 letzte Skizze einblenden';
+  } else {
+    img.src = f.storedSketch;
+    img.style.display = 'block';
+    btn.textContent = '🚫 letzte Skizze ausblenden';
+  }
+}
+
+/* ---------- Lösungsvergleich ---------- */
+
+function toggleSolutionOverlay(f) {
+  const sol = document.getElementById('draw-solution');
+  const btn = document.getElementById('draw-overlay-toggle');
+  if (!sol || !f.solutionSrc) return;
+  f.overlayOn = !f.overlayOn;
+  sol.style.display = f.overlayOn ? 'block' : 'none';
+  if (btn) btn.textContent = f.overlayOn ? '🚫 Überblendung aus' : '🔍 Überblenden';
+}
+
+// Wird beim Umdrehen der Karte aufgerufen: das Zeichenfeld bleibt sichtbar,
+// wenn die Rückseite gezeigt wird — dann liegt die eigene Skizze direkt über
+// bzw. neben der Lösung und lässt sich unmittelbar vergleichen.
+function updateDrawForFace(revealed) {
+  const block = document.getElementById('draw-block');
+  if (!block) return;
+  const anchor = document.getElementById('draw-anchor');
+  const persist = document.getElementById('draw-persist');
+  if (revealed && persist) persist.appendChild(block);
+  else if (!revealed && anchor) anchor.appendChild(block);
+
+  const solve = document.getElementById('draw-solve');
+  if (solve) solve.textContent = revealed ? 'Frage zeigen' : 'Lösung zeigen';
+
+  const row = document.getElementById('draw-overlay-row');
+  const f = drawField;
+  if (row) row.style.display = (revealed && f && f.solutionSrc) ? 'flex' : 'none';
+  if (!revealed && f && f.overlayOn) toggleSolutionOverlay(f);
+}
+
 /* ---------------------------------------------------------------------
    UI: Router / Views
    --------------------------------------------------------------------- */
@@ -1157,6 +2301,8 @@ function showToast(msg) {
 
 async function renderHome() {
   currentSession = null;
+  destroyDrawField();
+  drawManualToggle = null;
   const decks = await Store.getAllDecks();
   const today = Date.now();
 
@@ -1358,6 +2504,7 @@ async function saveImportedDeck(name, parsedCards) {
   const now = Date.now();
   const cards = parsedCards.map(c => ({
     deckId, front: c.front, back: c.back, css: c.css || '', mcData: c.mcData || null,
+    tags: c.tags || '',
     ease: 2.5, interval: 0, reps: 0, lapses: 0, favorite: false,
     due: now, firstReviewDone: false, created: now
   }));
@@ -1391,6 +2538,7 @@ async function exportDeck(deckId) {
     deck: { name: deck.name, newPerDay: deck.newPerDay || 20 },
     cards: cards.map(c => ({
       front: c.front || '', back: c.back || '', css: c.css || '', mcData: c.mcData || null,
+      tags: c.tags || '',
       favorite: !!c.favorite,
       ease: c.ease, interval: c.interval, reps: c.reps, lapses: c.lapses,
       due: c.due, firstReviewDone: !!c.firstReviewDone,
@@ -1476,6 +2624,7 @@ async function saveExportedDeck(name, obj) {
   const cards = obj.cards.map(c => ({
     deckId,
     front: c.front || '', back: c.back || '', css: c.css || '', mcData: c.mcData || null,
+    tags: c.tags || '',
     favorite: !!c.favorite,
     ease: (c.ease ?? 2.5),
     interval: (c.interval ?? 0),
@@ -1615,11 +2764,12 @@ function flashcardMarkup(card) {
     return `
       <div id="card-front-wrap">
         <div class="side-label">Vorderseite</div>
-        <div id="card-front" class="anki-card-scope">${front}</div>
+        <div id="card-front" class="anki-card-scope">${withDrawAnchor(front)}</div>
       </div>
+      <div id="draw-persist"></div>
       <div id="card-back-wrap" style="display:none">
         <div class="side-label">Rückseite</div>
-        <div id="card-back" class="anki-card-scope">${back}</div>
+        <div id="card-back" class="anki-card-scope">${stripDrawMarker(back)}</div>
       </div>
     `;
   }
@@ -1628,15 +2778,20 @@ function flashcardMarkup(card) {
   // dunkel zu stehen. Layout, Abstände und Schriftgrößen bleiben erhalten.
   let scopedCss = scopeCss(card.css || '', 'anki-card-scope');
   if (isDarkMode()) scopedCss = stripColorDeclarations(scopedCss);
+  // Der Platzhalter [zeichenfeld] wird aus dem Text entfernt und markiert genau
+  // die Stelle, an der das Zeichenfeld eingesetzt wird (siehe withDrawAnchor).
+  // #draw-persist nimmt das Zeichenfeld auf, sobald die Rückseite gezeigt wird —
+  // so bleibt die eigene Skizze beim Vergleich mit der Lösung sichtbar.
   return `
     <style>${scopedCss}</style>
     <div id="card-front-wrap">
       <div class="side-label">Vorderseite</div>
-      <div id="card-front" class="anki-card-scope">${card.front}</div>
+      <div id="card-front" class="anki-card-scope">${withDrawAnchor(card.front)}</div>
     </div>
+    <div id="draw-persist"></div>
     <div id="card-back-wrap" style="display:none">
       <div class="side-label">Rückseite</div>
-      <div id="card-back" class="anki-card-scope">${card.back}</div>
+      <div id="card-back" class="anki-card-scope">${stripDrawMarker(card.back)}</div>
     </div>
   `;
 }
@@ -1803,6 +2958,7 @@ function renderStudyView() {
   document.getElementById('btn-defer').addEventListener('click', deferCard);
 
   adaptCardForDark(flashcard);
+  setupDrawingForCard(card);
   typesetMath();
 }
 
@@ -1828,6 +2984,8 @@ function toggleCardFace() {
     if (answerButtons) answerButtons.style.display = 'grid';
     if (tapHint) tapHint.style.display = 'none';
   }
+  // Zeichenfeld wandert mit, damit die eigene Skizze neben der Lösung stehen bleibt
+  updateDrawForFace(!isRevealed);
   typesetMath();
 }
 
@@ -1873,7 +3031,7 @@ async function startFavoritesSession(deckId) {
 // Kurzvorschau einer Karte für Kachel-/Listenansicht: Klartext (HTML-Tags
 // entfernt) plus erstes Bild, falls vorhanden.
 function getCardPreview(card) {
-  const html = card.mcData ? card.mcData.frage : (card.front || '');
+  const html = stripDrawMarker(card.mcData ? card.mcData.frage : (card.front || ''));
   const imgMatch = /<img[^>]+src="([^"]*)"/.exec(html);
   const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   return { text: text || '(ohne Text)', imgSrc: imgMatch ? imgMatch[1] : null };
@@ -2060,6 +3218,7 @@ function confirmDeleteCard(card) {
 }
 
 function renderBrowseGridView() {
+  destroyDrawField();
   const b = browseSession;
   const tilesHtml = b.cards.map((card, i) => {
     const p = getCardPreview(card);
@@ -2085,6 +3244,7 @@ function renderBrowseGridView() {
 }
 
 function renderBrowseListView() {
+  destroyDrawField();
   const b = browseSession;
   const rowsHtml = b.cards.map((card, i) => {
     const p = getCardPreview(card);
@@ -2161,6 +3321,7 @@ function renderBrowseSingleView() {
   });
 
   adaptCardForDark(flashcard);
+  setupDrawingForCard(card);
   typesetMath();
 }
 
@@ -2260,6 +3421,7 @@ function confirmDeleteCurrentStudyCard() {
 }
 
 function renderSessionSummary() {
+  destroyDrawField();
   const s = currentSession;
   const canAhead = s && s.aheadPool && s.aheadPool.length > 0;
   app.innerHTML = `
