@@ -582,8 +582,31 @@ window.MathJax = {
   html.draw-lock-mode #app,
   html.draw-lock-mode .draw-canvas { touch-action: none; }
   .draw-solution { z-index: 4; opacity: .5; display: none; }
-  /* Bild, das als Hintergrundvorlage ins Canvas gewandert ist, im Text ausblenden */
-  img[data-draw-template] { display: none !important; }
+  /* Bild/Tabelle, das als Hintergrundvorlage ins Canvas gewandert ist, im Text ausblenden */
+  [data-draw-template] { display: none !important; }
+
+  /* ---------- Vorlage aus der Karte selbst (Tabelle / Zeichnung) ----------
+     Ein "gegeben"-Block der Vorderseite wird nicht abfotografiert, sondern als
+     echtes HTML in die Zeichenfläche gelegt: bleibt bei jeder Auflösung scharf
+     und braucht keinen Umweg über eine Bilddatei. Der Inhalt wird mittig
+     platziert und so weit vergrößert, dass man mit dem Stift bequem in die
+     Felder schreiben kann. */
+  .draw-dom-layer {
+    position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+  }
+  .draw-template-dom { z-index: 1; }
+  .draw-solution-dom { z-index: 4; opacity: .5; display: none; }
+  .draw-dom-inner {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    transform-origin: 50% 50%;
+    width: max-content; max-width: none;
+  }
+  /* Die Fläche ist immer hell — also auch im Dark Mode dunkle Schrift.
+     Eigene Farbangaben der Karte (inline) gehen vor und bleiben erhalten. */
+  .draw-dom-inner, .draw-dom-inner * { color: #16181d; }
+  .draw-dom-inner table { margin: 0 !important; border-collapse: collapse; }
+  .draw-solution-dom .draw-sol-fill { color: #1d6b3f; font-weight: 600; }
 
   .draw-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 10px; }
   .draw-actions button { padding: 13px 16px; font-size: .9rem; font-weight: 600; }
@@ -1400,16 +1423,20 @@ function adaptCardForDark(root) {
    Eine Ergänzung zur Kartenansicht — der Abfrage-Ablauf, SM-2 und der
    gespeicherte Lernfortschritt werden davon nicht berührt.
 
-   Das Feld erscheint automatisch, wenn eine dieser drei Bedingungen greift
+   Das Feld erscheint automatisch, wenn eine dieser vier Bedingungen greift
    (in dieser Reihenfolge geprüft, siehe detectDrawing):
      1. Platzhalter [zeichenfeld] bzw. [zeichenfeld:bild.png] im Fragetext
      2. Anki-Tag "zeichnen" an der Notiz
      3. Fragetext beginnt mit einer Wendung aus DRAW_TEXT_PATTERNS
+     4. Die Vorderseite zeigt unter "gegeben" eine Tabelle oder eine Skizze
+        bzw. eine Tabelle mit mehreren Leerfeldern (siehe findGivenTemplate)
    Zusätzlich lässt es sich mit dem Stift-Knopf unten rechts für die aktuelle
    Karte manuell ein- und ausschalten.
 
    Gezeichnet wird über Pointer Events auf einer transparenten Ebene ÜBER der
-   (optionalen) Bildvorlage — deshalb radiert der Radierer nie die Vorlage weg.
+   Vorlage — deshalb radiert der Radierer nie die Vorlage weg. Vorlage ist
+   entweder ein Bild (Ebene .draw-template) oder das "gegeben"-Element der
+   Karte selbst, das als echtes HTML in .draw-template-dom liegt.
    --------------------------------------------------------------------- */
 
 // Platzhalter im Kartentext. Optionaler Teil nach dem Doppelpunkt = Dateiname
@@ -1790,7 +1817,83 @@ function detectDrawing(card) {
   if (text && DRAW_TEXT_PATTERNS.some(re => re.test(text))) {
     return { on: true, reason: 'text', template: null };
   }
+  // 4. "gegeben"-Block mit Tabelle/Zeichnung bzw. Tabelle mit Leerfeldern:
+  //    Solche Karten füllt man aus — dafür ist das Zeichenfeld da.
+  const holder = document.createElement('div');
+  holder.innerHTML = stripDrawMarker(html || '');
+  if (findGivenTemplate(holder, true)) return { on: true, reason: 'gegeben', template: null };
   return { on: false, reason: null, template: null };
+}
+
+/* ---------- Vorlage aus der Karte selbst ----------
+   Viele Prüfungskarten zeigen unter der Überschrift "gegeben" eine leere
+   Tabelle oder eine Skizze, in die die Antwort einzutragen ist. Genau dieses
+   Element wandert als Vorlage in die Zeichenfläche — nachbauen muss man dort
+   also nichts mehr, man schreibt direkt hinein. */
+
+const GIVEN_LABEL_RE = /^(gegeben|geg\.?|vorgabe|vorlage|ausfüllen|auszufüllen)\s*:?$/i;
+
+// Elemente des Kartentextes — die Ebenen des Zeichenfelds selbst liegen mit im
+// Kartentext und dürfen nie als Vorlage dienen.
+function outsideStack(list) {
+  return Array.from(list).filter(el => !el.closest('.draw-stack'));
+}
+
+function givenLabelIn(root) {
+  const els = root.querySelectorAll('div,p,span,b,strong,em,i,h1,h2,h3,h4,h5,h6,label,caption,legend,td,th');
+  for (const el of els) {
+    if (el.closest('.draw-stack')) continue;
+    if (el.querySelector('table,svg,img')) continue;   // Beschriftung enthält nie die Vorlage
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (GIVEN_LABEL_RE.test(t)) return el;
+  }
+  return null;
+}
+
+// Leere Zellen = auszufüllende Felder.
+function blankCellCount(table) {
+  let n = 0;
+  for (const c of table.querySelectorAll('td,th')) {
+    const t = (c.textContent || '').replace(/\u00a0/g, ' ').trim();
+    if (!t) n++;
+  }
+  return n;
+}
+
+// Liefert { el, label } — das Vorlagenelement und (falls vorhanden) seine
+// "gegeben"-Beschriftung, die zusammen mit ihm im Text ausgeblendet wird.
+// strict=true: nur eindeutige Ausfüll-Vorlagen (für die automatische Erkennung).
+function findGivenTemplate(root, strict) {
+  if (!root) return null;
+
+  // 1. ausdrücklich ausgezeichnet
+  const marked = outsideStack(root.querySelectorAll('[data-vorlage],[data-given]'))[0];
+  if (marked) return { el: marked, label: null };
+
+  // 2. Element direkt nach einer "gegeben"-Beschriftung
+  const label = givenLabelIn(root);
+  if (label) {
+    const cands = outsideStack(root.querySelectorAll('table,svg,img'));
+    for (const el of cands) {
+      if (label.contains(el)) continue;
+      if (label.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        return { el, label };
+      }
+    }
+  }
+
+  // 3. Tabelle mit mehreren Leerfeldern — die ist unverkennbar zum Ausfüllen da
+  const tables = outsideStack(root.querySelectorAll('table'));
+  const blanks = tables.filter(t => blankCellCount(t) >= 3);
+  if (blanks.length === 1) return { el: blanks[0], label: null };
+
+  if (strict) return null;
+
+  // 4. Ohne Automatik (Stift-Knopf von Hand): genau eine Tabelle bzw. Zeichnung
+  if (tables.length === 1) return { el: tables[0], label: null };
+  const svgs = outsideStack(root.querySelectorAll('svg'));
+  if (!tables.length && svgs.length === 1) return { el: svgs[0], label: null };
+  return null;
 }
 
 // Ersetzt den Platzhalter durch den Ankerpunkt für das Zeichenfeld. Steht kein
@@ -1821,6 +1924,7 @@ function destroyDrawField() {
     clearTimeout(drawField.flashTimer);
     window.removeEventListener('resize', drawField.onResize);
     window.removeEventListener('orientationchange', drawField.onResize);
+    if (drawField.domObserver) drawField.domObserver.disconnect();
     // Läuft gerade eine Finger-Scrollgeste, hängen deren Zuhörer am window
     if (drawField.stopPan) drawField.stopPan();
     drawField = null;
@@ -1832,8 +1936,9 @@ function destroyDrawField() {
   applyDrawLockMode();          // ohne Knopf keine Sperre (siehe dort)
   const block = document.getElementById('draw-block');
   if (block) block.remove();
-  // Bild, das als Vorlage ins Canvas gewandert war, wieder im Kartentext zeigen
-  document.querySelectorAll('img[data-draw-template]').forEach(img => img.removeAttribute('data-draw-template'));
+  // Bild bzw. Tabelle, das als Vorlage ins Canvas gewandert war, wieder im
+  // Kartentext zeigen
+  document.querySelectorAll('[data-draw-template]').forEach(el => el.removeAttribute('data-draw-template'));
 }
 
 // Wird am Ende jeder Kartenansicht aufgerufen. Ohne Zeichenkarte passiert außer
@@ -1913,9 +2018,11 @@ function buildDrawField(card, det) {
     </div>
     <div class="draw-stack" id="draw-stack">
       <img class="draw-layer draw-template" id="draw-template" alt="">
+      <div class="draw-dom-layer draw-template-dom" id="draw-template-dom" aria-hidden="true"><div class="draw-dom-inner" id="draw-template-inner"></div></div>
       <img class="draw-layer draw-prev" id="draw-prev" alt="">
       <canvas class="draw-canvas" id="draw-canvas"></canvas>
       <img class="draw-layer draw-solution" id="draw-solution" alt="">
+      <div class="draw-dom-layer draw-solution-dom" id="draw-solution-dom" aria-hidden="true"><div class="draw-dom-inner" id="draw-solution-inner"></div></div>
     </div>
     <div class="draw-actions">
       <button class="draw-solve-btn" id="draw-solve">Lösung zeigen</button>
@@ -1946,14 +2053,15 @@ function buildDrawField(card, det) {
     holdAnchor: null, holdAnchorIndex: 0, holdTimer: null, flashTimer: null,
     undo: [], redo: [],
     overlayOn: false,
+    templateDom: null, solutionDom: null, givenEl: null, hasSolution: false,
     onResize: null
   };
   drawField = f;
 
-  f.onResize = () => fitDrawCanvas(f);
+  f.onResize = () => { fitDrawCanvas(f); fitDrawDomLayers(f); };
   window.addEventListener('resize', f.onResize);
   window.addEventListener('orientationchange', f.onResize);
-  requestAnimationFrame(() => { if (drawField === f) fitDrawCanvas(f); });
+  requestAnimationFrame(() => { if (drawField === f) f.onResize(); });
 
   wireDrawToolbar(f, block);
   wireDrawPointer(f);
@@ -1970,6 +2078,7 @@ function setupDrawLayers(f, det) {
   const frontEl = document.getElementById('card-front');
   const tplImg = document.getElementById('draw-template');
   let src = null;
+  let givenEl = null;
 
   if (det.template) {
     src = resolveTemplateSrc(det.template, frontEl);
@@ -1979,9 +2088,22 @@ function setupDrawLayers(f, det) {
     if (imgs.length === 1) {
       src = imgs[0].getAttribute('src');
       imgs[0].setAttribute('data-draw-template', '');  // im Text ausblenden
+    } else {
+      // Kein Bild: "gegeben"-Tabelle bzw. -Zeichnung der Karte übernehmen.
+      const found = findGivenTemplate(frontEl, false);
+      if (found) {
+        if (found.el.tagName === 'IMG') {
+          src = found.el.getAttribute('src');
+          found.el.setAttribute('data-draw-template', '');
+        } else {
+          givenEl = found.el;
+          useDomTemplate(f, found);
+        }
+      }
     }
   }
   f.templateSrc = src || null;
+  f.givenEl = givenEl;
   if (src && tplImg) {
     tplImg.addEventListener('error', () => { tplImg.style.display = 'none'; });
     tplImg.src = src;
@@ -2000,6 +2122,198 @@ function setupDrawLayers(f, det) {
     if (solImg) solImg.src = s;
     break;
   }
+  // Ohne Lösungsbild: die ausgefüllte Tabelle/Zeichnung der Rückseite nehmen.
+  if (!f.solutionSrc && f.givenEl) useDomSolution(f, holder);
+
+  f.hasSolution = !!(f.solutionSrc || f.solutionDom);
+  if (f.templateDom) fitDrawDomLayers(f);
+}
+
+/* ---------- Vorlage aus der Karte in die Zeichenfläche legen ---------- */
+
+// Legt das gefundene Element als Hintergrund ins Zeichenfeld und blendet es
+// (samt "gegeben"-Beschriftung) im Kartentext aus — sonst stünde dasselbe
+// zweimal untereinander.
+function useDomTemplate(f, found) {
+  const inner = document.getElementById('draw-template-inner');
+  if (!inner) return;
+  const clone = cloneForTemplate(found.el);
+  inner.innerHTML = '';
+  inner.appendChild(clone);
+  f.templateDom = clone;
+  f.givenHtml = found.el.outerHTML;   // vor dem Markieren, für den Abgleich mit der Rückseite
+  found.el.setAttribute('data-draw-template', '');
+  if (found.label) found.label.setAttribute('data-draw-template', '');
+
+  const hint = document.querySelector('#draw-block .draw-hint');
+  if (hint) {
+    const was = clone.tagName === 'TABLE' ? 'Tabelle' : 'Zeichnung';
+    hint.innerHTML = '<b>Die ' + was + ' der Karte liegt schon im Feld — direkt hineinschreiben.</b><br>' + hint.innerHTML;
+  }
+
+  // Sofort einpassen — und danach noch einmal, sobald sich die Größe ändert:
+  // MathJax setzt Formeln in der Vorlage erst später, und beim Umdrehen der
+  // Karte wechselt das Feld in eine andere Spalte.
+  fitDrawDomLayers(f);
+  if (window.ResizeObserver) {
+    f.domObserver = new ResizeObserver(() => { if (drawField === f) fitDrawDomLayers(f); });
+    const stack = document.getElementById('draw-stack');
+    if (stack) f.domObserver.observe(stack);
+    f.domObserver.observe(inner);
+  }
+}
+
+// Kopie fürs Zeichenfeld: leere Zellen bekommen Platz, damit man mit dem Stift
+// hineinschreiben kann. Die Vorlage in der Karte selbst bleibt unverändert.
+function cloneForTemplate(el) {
+  const clone = el.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+  if (clone.tagName === 'TABLE') {
+    for (const c of clone.querySelectorAll('td,th')) {
+      const t = (c.textContent || '').replace(/\u00a0/g, ' ').trim();
+      if (t) {
+        c.style.whiteSpace = 'nowrap';
+      } else {
+        c.style.minWidth = '104px';
+        c.style.height = '46px';
+      }
+    }
+  } else if (clone.tagName.toLowerCase() === 'svg') {
+    // Skizzen skalieren über die Zeichenfläche, nicht über feste Pixelmaße.
+    clone.removeAttribute('width');
+    clone.removeAttribute('height');
+    const box = clone.getAttribute('viewBox');
+    if (box) {
+      const n = box.split(/[\s,]+/).map(parseFloat);
+      if (n.length === 4 && n[2] > 0 && n[3] > 0) {
+        clone.style.width = n[2] + 'px';
+        clone.style.height = n[3] + 'px';
+      }
+    }
+  }
+  return clone;
+}
+
+// Lösung für die Überblendung. Passt die Tabelle der Rückseite in Zeilen und
+// Spalten zur Vorlage, werden ihre Texte in die Geometrie der VORLAGE gesetzt —
+// dann liegt die Lösung beim Überblenden zellengenau über der eigenen Schrift.
+function useDomSolution(f, backRoot) {
+  const inner = document.getElementById('draw-solution-inner');
+  if (!inner || !f.templateDom) return;
+  const tpl = f.templateDom;
+  const isTable = tpl.tagName === 'TABLE';
+  const own = f.givenHtml || '';
+
+  let sol = null;
+  const cands = Array.from(backRoot.querySelectorAll(isTable ? 'table' : 'svg'))
+    .filter(el => el.outerHTML !== own);
+  if (isTable) {
+    // Die ausgefüllte Fassung ist die mit den wenigsten Leerfeldern.
+    cands.sort((a, b) => blankCellCount(a) - blankCellCount(b));
+    sol = cands[0] || null;
+    if (sol && blankCellCount(sol) >= blankCellCount(f.givenEl)) sol = null;
+  } else {
+    sol = cands[cands.length - 1] || null;
+  }
+  if (!sol) return;
+
+  const merged = isTable ? mergeSolutionIntoTemplate(tpl, sol) : cloneForTemplate(sol);
+  inner.innerHTML = '';
+  inner.appendChild(merged);
+  f.solutionDom = merged;
+}
+
+// Zellen der Vorlage mit den Texten der Lösungstabelle füllen. Passt die Form
+// nicht zusammen, wird die Lösungstabelle unverändert übernommen.
+function mergeSolutionIntoTemplate(tplTable, solTable) {
+  const tplRows = Array.from(tplTable.rows);
+  const solRows = Array.from(solTable.rows);
+  const sameShape = tplRows.length === solRows.length &&
+    tplRows.every((r, i) => r.cells.length === solRows[i].cells.length);
+  if (!sameShape) {
+    const plain = cloneForTemplate(solTable);
+    plain.querySelectorAll('td,th').forEach(c => { c.style.whiteSpace = ''; });
+    return plain;
+  }
+  const merged = cloneForTemplate(tplTable);
+  const mRows = Array.from(merged.rows);
+  mRows.forEach((row, i) => {
+    Array.from(row.cells).forEach((cell, j) => {
+      const wasBlank = !(cell.textContent || '').replace(/\u00a0/g, ' ').trim();
+      if (!wasBlank) return;
+      const solCell = solRows[i].cells[j];
+      cell.innerHTML = solCell ? solCell.innerHTML : '';
+      cell.classList.add('draw-sol-fill');
+      cell.style.whiteSpace = 'normal';
+      cell.style.fontSize = '12px';
+      cell.style.lineHeight = '1.25';
+      cell.style.padding = '2px 4px';
+      cell.style.verticalAlign = 'middle';
+    });
+  });
+  return merged;
+}
+
+// Vorlage und Lösung mittig einpassen: so groß wie möglich, aber vollständig
+// sichtbar. Beide bekommen denselben Maßstab und dieselben Zellmaße — nur so
+// liegt die Lösung beim Überblenden genau auf der eigenen Schrift.
+function fitDrawDomLayers(f) {
+  const stack = document.getElementById('draw-stack');
+  const tplInner = document.getElementById('draw-template-inner');
+  const solInner = document.getElementById('draw-solution-inner');
+  if (!stack || !tplInner || !tplInner.firstElementChild) return;
+  const box = stack.getBoundingClientRect();
+  if (!box.width || !box.height) return;
+  const pad = 10;
+
+  const inners = [tplInner, solInner].filter(el => el && el.firstElementChild);
+  inners.forEach(el => { el.style.transform = 'translate(-50%, -50%)'; });
+
+  if (f.solutionDom && f.templateDom && f.templateDom.tagName === 'TABLE'
+      && f.solutionDom.tagName === 'TABLE') {
+    copyTableGeometry(f.templateDom, f.solutionDom);
+  }
+
+  const r = tplInner.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const raw = Math.min((box.width - 2 * pad) / r.width, (box.height - 2 * pad) / r.height);
+  const scale = Math.max(.15, Math.min(4, raw));
+  inners.forEach(el => { el.style.transform = 'translate(-50%, -50%) scale(' + scale + ')'; });
+  f.domScale = scale;
+}
+
+// Spaltenbreiten und Zeilenhöhen der Vorlage auf die Lösungstabelle übertragen.
+function copyTableGeometry(tpl, sol) {
+  const tRows = Array.from(tpl.rows);
+  const sRows = Array.from(sol.rows);
+  if (!tRows.length || tRows.length !== sRows.length) return;
+  const first = tRows[0];
+  sol.style.tableLayout = 'fixed';
+  sol.style.width = tpl.getBoundingClientRect().width + 'px';
+  tRows.forEach((row, i) => {
+    const h = row.getBoundingClientRect().height;
+    if (h) sRows[i].style.height = h + 'px';
+    if (row !== first) return;
+    Array.from(row.cells).forEach((cell, j) => {
+      const w = cell.getBoundingClientRect().width;
+      const target = sRows[i].cells[j];
+      if (!w || !target) return;
+      // Gemessen wird die Außenkante — also muss die Zelle auch so rechnen.
+      target.style.boxSizing = 'border-box';
+      target.style.width = w + 'px';
+    });
+  });
+  // Zweiter Durchgang: Rahmen und Zellabstände verschieben die Spalten noch um
+  // ein paar Pixel — Restabweichung messen und ausgleichen.
+  Array.from(first.cells).forEach((cell, j) => {
+    const target = sRows[0].cells[j];
+    if (!target || !target.style.width) return;
+    const want = cell.getBoundingClientRect().width;
+    const got = target.getBoundingClientRect().width;
+    if (want && got) target.style.width = (parseFloat(target.style.width) + (want - got)) + 'px';
+  });
+  sol.style.width = tpl.getBoundingClientRect().width + 'px';
 }
 
 // Bilder des Kartentextes — die Ebenen des Zeichenfelds selbst liegen ebenfalls
@@ -2084,8 +2398,11 @@ function wireDrawToolbar(f, block) {
 
   block.querySelector('#draw-overlay-toggle').addEventListener('click', () => toggleSolutionOverlay(f));
   block.querySelector('#draw-overlay-opacity').addEventListener('input', (e) => {
+    const v = String(parseInt(e.target.value, 10) / 100);
     const sol = document.getElementById('draw-solution');
-    if (sol) sol.style.opacity = String(parseInt(e.target.value, 10) / 100);
+    const solDom = document.getElementById('draw-solution-dom');
+    if (sol) sol.style.opacity = v;
+    if (solDom) solDom.style.opacity = v;
   });
 }
 
@@ -2105,7 +2422,7 @@ function updateUndoButtons(f) {
 function confirmDrawClear(f) {
   showModal({
     title: 'Zeichnung löschen?',
-    body: 'Die aktuelle Zeichnung wird vollständig entfernt. Die Bildvorlage bleibt erhalten.',
+    body: 'Die aktuelle Zeichnung wird vollständig entfernt. Die Vorlage bleibt erhalten.',
     actions: [
       { label: 'Abbrechen', class: 'secondary' },
       { label: 'Ja, löschen', class: 'primary', onClick: () => {
@@ -2880,11 +3197,14 @@ function togglePrevSketch(f) {
 /* ---------- Lösungsvergleich ---------- */
 
 function toggleSolutionOverlay(f) {
-  const sol = document.getElementById('draw-solution');
+  const layer = f.solutionSrc
+    ? document.getElementById('draw-solution')
+    : document.getElementById('draw-solution-dom');
   const btn = document.getElementById('draw-overlay-toggle');
-  if (!sol || !f.solutionSrc) return;
+  if (!layer || !f.hasSolution) return;
   f.overlayOn = !f.overlayOn;
-  sol.style.display = f.overlayOn ? 'block' : 'none';
+  layer.style.display = f.overlayOn ? 'block' : 'none';
+  if (f.overlayOn) fitDrawDomLayers(f);
   if (btn) btn.textContent = f.overlayOn ? '🚫 Überblendung aus' : '🔍 Überblenden';
 }
 
@@ -2904,8 +3224,10 @@ function updateDrawForFace(revealed) {
 
   const row = document.getElementById('draw-overlay-row');
   const f = drawField;
-  if (row) row.style.display = (revealed && f && f.solutionSrc) ? 'flex' : 'none';
+  if (row) row.style.display = (revealed && f && f.hasSolution) ? 'flex' : 'none';
   if (!revealed && f && f.overlayOn) toggleSolutionOverlay(f);
+  // Das Feld wechselt die Spalte — Vorlage und Lösung neu einpassen.
+  if (f) requestAnimationFrame(() => { if (drawField === f) f.onResize(); });
 }
 
 /* ---------------------------------------------------------------------
