@@ -1738,7 +1738,7 @@ function buildDrawField(card, det) {
     card, canvas, ctx: null, dpr: 1, cssW: 0, cssH: 0,
     color, width,
     eraser: false,
-    drawing: false, activeId: null,
+    drawing: false, activeId: null, strokeStart: null,
     points: [], base: null, recognized: null,
     shapeDrag: false, shapeStart: null,
     holdAnchor: null, holdAnchorIndex: 0, holdTimer: null, flashTimer: null,
@@ -1926,6 +1926,19 @@ function clearDrawCanvas(f) {
 function snapshotDataUrl(f) {
   try { return f.canvas.toDataURL('image/png'); } catch (e) { return null; }
 }
+// Der Zustand VOR dem Strich wandert als PNG in den Rückgängig-Stapel. Das
+// Kodieren kostet auf dem iPad zweistellige Millisekunden — direkt beim
+// Abheben des Stifts blockiert es genau die Lücke, in der man beim schnellen
+// Schreiben schon wieder aufsetzt. Deshalb erst im nächsten freien Moment.
+// Die Reihenfolge bleibt erhalten, weil alle Aufträge dieselbe Warteschlange
+// benutzen.
+function queueUndoSnapshot(f, baseCanvas) {
+  if (!baseCanvas) return;
+  setTimeout(() => {
+    if (drawField !== f) return;
+    try { pushUndoState(f, baseCanvas.toDataURL('image/png')); } catch (e) { /* egal */ }
+  }, 0);
+}
 function pushUndoState(f, dataUrl) {
   if (!dataUrl) return;
   f.undo.push(dataUrl);
@@ -2041,11 +2054,19 @@ function wireDrawPointer(f) {
     tapStart = null;
     if (!f.ctx) fitDrawCanvas(f);
     if (!f.ctx) return;
+    // Setzt der Stift erneut auf, obwohl der vorige Strich noch als laufend
+    // gilt, dann ist dessen pointerup unterwegs verlorengegangen oder kommt
+    // gleich verspätet. Den alten Strich hier sauber abschließen, sonst
+    // schlägt er später in den neuen hinein.
+    if (f.drawing) finish();
     // Kein preventDefault: der Zuhörer ist passiv, damit WebKit das Scrollen
     // über der Fläche nicht im Haupt-Thread abwickeln muss. Das native
     // Verhalten hält stattdessen touch-action auf.
     try { c.setPointerCapture(e.pointerId); } catch (err) { /* egal */ }
     f.activeId = e.pointerId;
+    // Anfangszeit des Strichs — daran werden verspätete Ereignisse des
+    // VORIGEN Strichs erkannt (siehe istVeraltet).
+    f.strokeStart = (typeof e.timeStamp === 'number') ? e.timeStamp : performance.now();
     f.drawing = true;
     f.recognized = null;
     // Zustand vor dem Strich sichern — Grundlage für Begradigen und Rückgängig
@@ -2068,7 +2089,18 @@ function wireDrawPointer(f) {
     for (const ev of evts) addDrawPoint(f, drawPointOf(f, ev));
   }, { passive: true });
 
+  // Beim Apple Pencil tragen ALLE Striche dieselbe pointerId. Setzt man beim
+  // Schreiben schnell wieder auf (drittes Bein eines "H"), kann das pointerup
+  // des vorigen Strichs erst NACH dem pointerdown des neuen eintreffen —
+  // dieselbe Kennung, also hielt die App es für das Ende des neuen Strichs
+  // und beendete ihn sofort wieder: der dritte Strich fehlte. Zeitstempel
+  // sind auch bei verdrehter Zustellung die der Entstehung, daran lässt sich
+  // ein Nachzügler sicher erkennen.
+  const istVeraltet = (e) =>
+    !!e && typeof e.timeStamp === 'number' && f.strokeStart != null && e.timeStamp < f.strokeStart;
+
   const finish = (e) => {
+    if (istVeraltet(e)) return;
     if (!f.drawing || (e && e.pointerId !== f.activeId)) return;
     clearTimeout(f.holdTimer);
     f.drawing = false;
@@ -2085,7 +2117,7 @@ function wireDrawPointer(f) {
     } else {
       drawStrokeTail(f);
     }
-    if (f.base) pushUndoState(f, f.base.toDataURL('image/png'));
+    queueUndoSnapshot(f, f.base);
     f.base = null;
     f.recognized = null;
     f.shapeDrag = false;
@@ -2111,6 +2143,7 @@ function wireDrawPointer(f) {
       tapStart = null;
       return;
     }
+    if (istVeraltet(e)) return;        // Nachzügler des vorigen Strichs
     clearTimeout(f.holdTimer);
     clearTimeout(f.flashTimer);
     if (!f.drawing) return;
