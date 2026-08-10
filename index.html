@@ -623,12 +623,13 @@ window.MathJax = {
     pointer-events: none; letter-spacing: .01em;
   }
   #diag-text { white-space: pre; overflow-x: auto; }
-  #diag-copy {
+  #diag-copy, #diag-mark {
     pointer-events: auto; margin-top: 6px; padding: 7px 10px;
     font: 600 11px/1 -apple-system, sans-serif;
     background: #7dff9b; color: #062a12; border: none; border-radius: 6px;
     -webkit-appearance: none; appearance: none;
   }
+  #diag-mark { background: #ff9b7d; color: #2a0f06; margin-right: 6px; }
 
   #file-input { display: none; }
 
@@ -1522,7 +1523,7 @@ function diagnosticsEnabled() { return lsGet(DRAW_PREF.diag, '0') === '1'; }
    damit gemacht hat. Nur so lässt sich klären, warum auf dem iPad ein Strich
    verschluckt wird — am Rechner tritt der Fall nicht auf. Über den Knopf 📋
    in der Anzeige wandert die Mitschrift in die Zwischenablage. */
-const DIAG_LOG_MAX = 120;
+const DIAG_LOG_MAX = 400;
 const diagLog = [];
 let diagT0 = 0;
 
@@ -1532,6 +1533,88 @@ function diagNote(text) {
   if (!diagT0) diagT0 = now;
   diagLog.push(String(Math.round(now - diagT0)).padStart(6, ' ') + 'ms  ' + text);
   if (diagLog.length > DIAG_LOG_MAX) diagLog.shift();
+}
+
+/* ---------- Tintenzähler ----------
+   Zählt, wie viele Bildpunkte der Zeichenfläche überhaupt gefärbt sind (auf
+   160x120 heruntergerechnet, damit das Auslesen nicht bremst). Damit lässt
+   sich die entscheidende Frage beantworten, die die erste Mitschrift offen
+   ließ: Wenn ein Strich sauber ankommt und trotzdem fehlt, muss die Tinte
+   nach dem Strich steigen und vor dem nächsten Strich wieder gefallen sein —
+   dann löscht ihn etwas nachträglich. Bleibt die Tinte dagegen stehen, wurde
+   nie gezeichnet. */
+let diagInkCanvas = null;
+function diagInk(f) {
+  if (!diagnosticsEnabled()) return -1;
+  if (!f || !f.canvas || !f.canvas.width || !f.canvas.height) return -1;
+  try {
+    if (!diagInkCanvas) {
+      diagInkCanvas = document.createElement('canvas');
+      diagInkCanvas.width = 160; diagInkCanvas.height = 120;
+    }
+    const g = diagInkCanvas.getContext('2d', { willReadFrequently: true });
+    g.clearRect(0, 0, 160, 120);
+    // Ohne Glättung fällt ein dünner Strich beim Herunterrechnen unter den
+    // Tisch — er läge dann genau zwischen zwei abgetasteten Punkten.
+    g.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in g) g.imageSmoothingQuality = 'high';
+    g.drawImage(f.canvas, 0, 0, 160, 120);
+    const d = g.getImageData(0, 0, 160, 120).data;
+    let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 8) n++;
+    return n;
+  } catch (e) { return -1; }
+}
+
+/* ---------- Seitenwacht ----------
+   Die Mitschrift hing bisher an den Zuhörern der Zeichenfläche selbst. Fehlt
+   dort ein Ereignis, sagt sie nicht, ob (a) WebKit gar nichts geschickt hat
+   oder (b) das Ereignis an einem anderen Element gelandet ist. Diese Zuhörer
+   sitzen am Dokument in der Einfangphase — sie laufen VOR denen der Fläche
+   und sehen deshalb jedes Zeiger-Ereignis der ganzen Seite, samt Ziel.
+   Zusätzlich die rohen Touch-Ereignisse: iPadOS meldet den Pencil auch dort
+   (touchType 'stylus'). Kommt ein touchstart ohne zugehöriges pointerdown an,
+   verschluckt die Pointer-Ebene von WebKit den Strich — das wäre der Beweis,
+   und die Abhilfe sähe völlig anders aus. */
+let diagWachtSteht = false;
+
+function diagZiel(t) {
+  if (!t || !t.tagName) return '?';
+  const tag = t.tagName.toLowerCase();
+  if (t.id) return tag + '#' + t.id;
+  const cls = (typeof t.className === 'string') ? t.className.trim().split(/\s+/)[0] : '';
+  return cls ? tag + '.' + cls : tag;
+}
+
+function diagWireSeitenwacht() {
+  if (diagWachtSteht) return;
+  diagWachtSteht = true;
+
+  ['pointerdown', 'pointerup', 'pointercancel'].forEach(art => {
+    document.addEventListener(art, (e) => {
+      // pointermove bleibt außen vor — davon kommen hunderte je Strich.
+      diagNote('  Seite ' + art.replace('pointer', '').toUpperCase().padEnd(6) +
+        e.pointerType + ' #' + e.pointerId + ' ts=' + Math.round(e.timeStamp) +
+        ' auf ' + diagZiel(e.target));
+    }, { capture: true, passive: true });
+  });
+
+  ['touchstart', 'touchend', 'touchcancel'].forEach(art => {
+    document.addEventListener(art, (e) => {
+      const t = e.changedTouches && e.changedTouches[0];
+      diagNote('  Touch ' + art.replace('touch', '').toUpperCase().padEnd(6) +
+        (t && t.touchType ? t.touchType : 'unbekannt') +
+        ' (' + (e.touches ? e.touches.length : '?') + ' auf dem Glas)' +
+        ' auf ' + diagZiel(e.target));
+    }, { capture: true, passive: true });
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    diagNote('  Seite ' + (document.hidden ? 'in den Hintergrund' : 'wieder im Vordergrund'));
+  });
+  window.addEventListener('resize', () => {
+    diagNote('  Fenster neu vermessen ' + window.innerWidth + 'x' + window.innerHeight);
+  }, { passive: true });
 }
 
 function diagLogText() {
@@ -1547,6 +1630,19 @@ function diagLogText() {
     '',
     ...diagLog
   ].join('\n');
+}
+
+/* Der Knopf „❗ Strich fehlte": setzt eine Marke in die Mitschrift, sobald ein
+   Strich sichtbar gefehlt hat. Ohne sie lässt sich hinterher nicht sagen,
+   welche Gruppe von Strichen der misslungene Buchstabe war — genau daran
+   scheiterte die Auswertung der ersten Mitschrift. */
+let diagMarkeNr = 0;
+function diagMarke() {
+  diagMarkeNr++;
+  diagNote('=== MARKE ' + diagMarkeNr + ': hier fehlte ein Strich ===' +
+    '  (Tinte jetzt ' + diagInk(drawField) + '; gemeint sind die Striche' +
+    ' oberhalb dieser Zeile, ohne den Tipp auf den Knopf)');
+  showToast('Marke ' + diagMarkeNr + ' gesetzt');
 }
 
 async function diagKopieren() {
@@ -1578,10 +1674,13 @@ function applyDiagnostics() {
     hud = document.createElement('div');
     hud.id = 'diag-hud';
     hud.innerHTML = '<div id="diag-text"></div>'
+      + '<button id="diag-mark" type="button">❗ Strich fehlte</button>'
       + '<button id="diag-copy" type="button">📋 Mitschrift kopieren</button>';
     document.body.appendChild(hud);
     hud.querySelector('#diag-copy').addEventListener('click', diagKopieren);
+    hud.querySelector('#diag-mark').addEventListener('click', diagMarke);
   }
+  diagWireSeitenwacht();
   if (diagRaf) return;
 
   let lastScroll = 0;
@@ -1896,6 +1995,8 @@ function fitDrawCanvas(f) {
   const h = Math.max(1, Math.round(rect.height * dpr));
   if (f.canvas.width === w && f.canvas.height === h) return;
 
+  diagNote('FIT   Zeichenflaeche neu ' + w + 'x' + h +
+    ' (vorher ' + f.canvas.width + 'x' + f.canvas.height + ')');
   // Vorhandene Zeichnung beim Größenwechsel (z.B. Drehen des iPads) mitnehmen
   let old = null;
   if (f.canvas.width && f.canvas.height) {
@@ -2116,6 +2217,7 @@ function wireDrawPointer(f) {
     }
     diagStats.penDown++;
     diagNote('DOWN  ' + e.pointerType + ' #' + e.pointerId + ' ts=' + Math.round(e.timeStamp)
+      + '  Tinte ' + diagInk(f)
       + (f.drawing ? '  (voriger Strich lief noch)' : ''));
     tapStart = null;
     if (!f.ctx) fitDrawCanvas(f);
@@ -2217,6 +2319,9 @@ function wireDrawPointer(f) {
     f.recognized = null;
     f.shapeDrag = false;
     f.points = [];
+    // Ist der Strich wirklich in den Bildpunkten gelandet? Der Wert gehört zum
+    // Wert beim nächsten DOWN: fällt er dazwischen, löscht ihn etwas wieder.
+    if (e) diagNote('        -> Tinte danach ' + diagInk(f));
   };
 
   c.addEventListener('pointerup', (e) => {
