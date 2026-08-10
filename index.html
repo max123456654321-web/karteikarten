@@ -1501,6 +1501,8 @@ function applyDrawLockMode() {
   }
   const sw = document.getElementById('switch-drawlock');
   if (sw) sw.classList.toggle('on', on);
+  // Der Gesten-Riegel hängt an der Sperre (siehe wireDrawPointer)
+  if (drawField && drawField.applyGestenRiegel) drawField.applyGestenRiegel();
 }
 
 /* ---------------------------------------------------------------------
@@ -1523,7 +1525,7 @@ function diagnosticsEnabled() { return lsGet(DRAW_PREF.diag, '0') === '1'; }
    damit gemacht hat. Nur so lässt sich klären, warum auf dem iPad ein Strich
    verschluckt wird — am Rechner tritt der Fall nicht auf. Über den Knopf 📋
    in der Anzeige wandert die Mitschrift in die Zwischenablage. */
-const DIAG_LOG_MAX = 400;
+const DIAG_LOG_MAX = 900;
 const diagLog = [];
 let diagT0 = 0;
 
@@ -1609,6 +1611,44 @@ function diagWireSeitenwacht() {
     }, { capture: true, passive: true });
   });
 
+  // Schwebespur: iPadOS meldet den Pencil schon, bevor er aufsetzt. Wenn ein
+  // Kontakt spurlos verschwindet, zeigt sie, ob der Stift überhaupt zum
+  // dritten Strich heruntergefahren ist. Mitgeschrieben wird nur die halbe
+  // Sekunde nach dem Abheben — genau das Fenster, in dem der verschluckte
+  // Kontakt läge. Sonst liefe die Mitschrift mit Schwebepunkten voll.
+  let letzteAbhebung = 0;
+  let letzteSchwebe = 0;
+  ['pointerover', 'pointerout'].forEach(art => {
+    document.addEventListener(art, (e) => {
+      if (e.pointerType !== 'pen') return;
+      diagNote('  Schwebe ' + art.replace('pointer', '').toUpperCase().padEnd(5) +
+        ' #' + e.pointerId + ' auf ' + diagZiel(e.target));
+    }, { capture: true, passive: true });
+  });
+  ['pointerup', 'pointercancel'].forEach(art => {
+    document.addEventListener(art, (e) => {
+      if (e.pointerType === 'pen') letzteAbhebung = performance.now();
+    }, { capture: true, passive: true });
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (e.pointerType !== 'pen') return;
+    if (drawField && drawField.drawing) return;      // echter Strich, kein Schweben
+    const now = performance.now();
+    if (now - letzteAbhebung > 500 || now - letzteSchwebe < 100) return;
+    letzteSchwebe = now;
+    diagNote('  Schwebe bei ' + Math.round(e.clientX) + ',' + Math.round(e.clientY));
+  }, { capture: true, passive: true });
+
+  // Wohin sonst könnte ein verschluckter Kontakt geraten sein? Wenn WebKit ihn
+  // als Tippgeste verbucht, taucht er hier als click/dblclick auf; als
+  // Zoomgeste unter gesturestart.
+  ['mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'selectstart',
+   'gesturestart', 'gestureend'].forEach(art => {
+    document.addEventListener(art, (e) => {
+      diagNote('  Sonst  ' + art + ' auf ' + diagZiel(e.target));
+    }, { capture: true, passive: true });
+  });
+
   document.addEventListener('visibilitychange', () => {
     diagNote('  Seite ' + (document.hidden ? 'in den Hintergrund' : 'wieder im Vordergrund'));
   });
@@ -1624,7 +1664,8 @@ function diagLogText() {
     'Fassung vom ' + document.lastModified,
     'Sperre: ' + (drawLockMode() ? 'AN' : 'aus') +
       '   Flaeche: ' + (c ? getComputedStyle(c).touchAction : '—') +
-      '   Finger-Zeichnen: ' + (fingerDrawingEnabled() ? 'an' : 'aus'),
+      '   Finger-Zeichnen: ' + (fingerDrawingEnabled() ? 'an' : 'aus') +
+      '   Gesten-Riegel: ' + (drawLockMode() ? 'AN' : 'aus'),
     'Stift ' + diagStats.penDown + ' (abgebrochen ' + diagStats.penCancel + ')' +
       '   Finger ' + diagStats.touchDown + ' (abgebrochen ' + diagStats.touchCancel + ')',
     '',
@@ -2187,6 +2228,34 @@ function wireDrawPointer(f) {
     c.classList.toggle('finger-draw', fingerDrawingEnabled());
   };
   f.applyFingerMode();
+
+  // ---------------------------------------------------------------------
+  // Gesten-Riegel
+  // ---------------------------------------------------------------------
+  // Die Mitschrift vom iPad zeigt: beim schnellen "H" wird der dritte Kontakt
+  // auf KEINER Ebene gemeldet — weder als pointerdown noch als rohes
+  // touchstart. Er geht also unterhalb von JavaScript verloren, in den
+  // Gestenerkennern von iPadOS. touch-action: none und user-scalable=no
+  // greifen dort nachweislich nicht (beides ist längst gesetzt). Das einzige
+  // verbliebene Mittel, WebKit "dieser Kontakt gehört mir" zu sagen, ist
+  // preventDefault auf touchstart — und dafür muss der Zuhörer nicht-passiv
+  // sein.
+  //
+  // Genau das war bisher verboten, weil ein nicht-passiver Zuhörer WebKit
+  // zwingt, das Scrollen über der Fläche im Haupt-Thread abzuwickeln (davon
+  // kam das Ruckeln). Dieser Widerspruch löst sich über die Zeichnen-Sperre:
+  // ist sie an, wird ohnehin nicht gescrollt (die ganze Seite steht auf
+  // touch-action: none) — es gibt also nichts mehr zu verlangsamen. Ist sie
+  // aus, bleibt alles passiv wie bisher.
+  //
+  // Der Riegel sitzt NUR auf der Zeichenfläche. Auf den Knöpfen würde
+  // preventDefault deren Klick verschlucken.
+  const gestenRiegel = (e) => { e.preventDefault(); };
+  f.applyGestenRiegel = () => {
+    c.removeEventListener('touchstart', gestenRiegel);
+    if (drawLockMode()) c.addEventListener('touchstart', gestenRiegel, { passive: false });
+  };
+  f.applyGestenRiegel();
   f.stopPan = () => { tapStart = null; };
 
   // Doppeltipp mit dem Finger dreht die Karte um — auch mitten auf der
