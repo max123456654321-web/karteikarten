@@ -444,16 +444,32 @@ window.MathJax = {
 
   .modal-overlay {
     position: fixed; inset: 0; background: rgba(44,42,38,.45);
-    display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 50;
+    display: flex; align-items: flex-start; justify-content: center; padding: 24px; z-index: 50;
     backdrop-filter: blur(2px);
+    overflow-y: auto;   /* Notausgang, falls der Kasten doch mal höher wird als der Schirm */
   }
+  /* Ein langer Dialog (Einstellungen) darf nie über den Bildschirmrand hinaus
+     wachsen — sonst sitzt "Fertig" im Nichts und ist am Rechner nicht mehr
+     erreichbar. Der Kasten bleibt also höchstens so hoch wie der Schirm, der
+     TEXT scrollt für sich, und die Knopfzeile bleibt immer stehen.
+     margin:auto (statt align-items:center) zentriert kurze Dialoge und
+     schneidet lange trotzdem nicht oben ab. */
   .modal-box {
     background: #fff; border-radius: var(--radius); padding: 26px; max-width: 400px; width: 100%;
     box-shadow: var(--shadow-lg);
     animation: card-in .2s ease;
+    margin: auto;
+    max-height: 100%;
+    display: flex; flex-direction: column; min-height: 0;
   }
-  .modal-box h3 { margin-top: 0; }
-  .modal-box .modal-actions { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; }
+  .modal-box h3 { margin-top: 0; flex: none; }
+  .modal-body {
+    overflow-y: auto; min-height: 0; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    /* etwas Luft, damit die Schalter am Rand beim Scrollen nicht angeschnitten wirken */
+    margin: 0 -4px; padding: 0 4px;
+  }
+  .modal-box .modal-actions { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; flex: none; }
 
   /* ---------- Einstellungen (Schalter) ---------- */
   .setting-row {
@@ -620,17 +636,23 @@ window.MathJax = {
   .draw-overlay-row input[type=range] { width: 150px; accent-color: var(--accent); }
   .draw-hint { color: var(--ink-soft); font-size: .76rem; margin-top: 8px; line-height: 1.4; }
   #draw-persist:not(:empty) { margin: 2px 0 14px; }
+  /* Die Höhe der Knöpfe steckt in --fab-bottom: Auf schmalen Geräten (iPhone)
+     reicht die Kartenspalte bis an den rechten Rand, dann läge der Stift-Knopf
+     genau auf der "Leicht"-Taste. updateFabDodge() hebt den Stapel dann über
+     die Bewertungsreihe. Auf dem iPad bleibt daneben Platz — dort rührt sich
+     nichts. */
   .draw-pen-fab {
-    position: fixed; right: 16px; bottom: 16px; z-index: 45;
+    position: fixed; right: 16px; bottom: var(--fab-bottom, 16px); z-index: 45;
     width: 54px; height: 54px; border-radius: 50%; padding: 0; border: none;
     background: var(--card-bg); color: var(--ink); box-shadow: var(--shadow-md);
     font-size: 1.3rem; display: flex; align-items: center; justify-content: center;
     -webkit-appearance: none; appearance: none;
+    transition: bottom .16s ease;
   }
   .draw-pen-fab:active { transform: scale(.93); }
   .draw-pen-fab.active { background: var(--accent-soft); box-shadow: var(--shadow-md), inset 0 0 0 3px var(--accent); }
   /* Zeichnen-Sperre — sitzt direkt über dem Stift-Knopf */
-  .draw-lock-fab { bottom: 80px; }
+  .draw-lock-fab { bottom: calc(var(--fab-bottom, 16px) + 64px); }
   .draw-lock-fab.active {
     background: var(--hard); color: #241c07;
     box-shadow: var(--shadow-md), inset 0 0 0 3px var(--accent-dark);
@@ -1934,6 +1956,7 @@ function destroyDrawField() {
   const lockFab = document.getElementById('draw-lock-fab');
   if (lockFab) lockFab.remove();
   applyDrawLockMode();          // ohne Knopf keine Sperre (siehe dort)
+  updateFabDodge();             // ohne Knopf auch keine Ausweich-Höhe
   const block = document.getElementById('draw-block');
   if (block) block.remove();
   // Bild bzw. Tabelle, das als Vorlage ins Canvas gewandert war, wieder im
@@ -1985,7 +2008,62 @@ function addDrawPenFab(card, on) {
   });
   main.appendChild(lock);
   applyDrawLockMode();
+  updateFabDodge();
 }
+
+/* ---------------------------------------------------------------------
+   Ausweichen vor den Knopfreihen (iPhone)
+   Auf dem iPad ist die Kartenspalte auf 720px begrenzt und daneben bleibt
+   genug Rand für die runden Knöpfe. Auf dem iPhone reicht die Spalte bis an
+   den Rand — dort deckten Stift- und Sperr-Knopf die rechte Taste ("Leicht")
+   zu und man traf sie nicht mehr. Deshalb wird hier gemessen: Überschneidet
+   sich eine Knopfreihe mit dem Knopfstapel, wandert der Stapel darüber.
+   Rein rechnerisch — auf breiten Geräten kommt dabei die alte Lage heraus.
+   --------------------------------------------------------------------- */
+const FAB_SIZE = 54;      // Durchmesser eines runden Knopfs
+const FAB_EDGE = 16;      // Grundabstand zum unteren Rand
+const FAB_GAP  = 64;      // Versatz Stift-Knopf -> Sperr-Knopf (siehe CSS)
+// Reihen, die frei bleiben müssen: Bewertung beim Lernen, Blättern/Löschen beim Durchsehen
+const FAB_DODGE_ROWS = '#answer-buttons, .browse-nav, .browse-delete-btn';
+
+function updateFabDodge() {
+  const root = document.documentElement;
+  if (!document.getElementById('draw-pen-fab')) { root.style.removeProperty('--fab-bottom'); return; }
+
+  // clientWidth/clientHeight statt innerWidth/innerHeight: Das ist genau der
+  // Bereich, auf den sich "position: fixed" bezieht — ein Scrollbalken am
+  // Rechner zählt hier nicht mit und die Knöpfe wurden sonst zu weit rechts
+  // vermutet.
+  const vh = root.clientHeight || window.innerHeight;
+  const vw = root.clientWidth || window.innerWidth;
+  const fabLeft   = vw - FAB_EDGE - FAB_SIZE;                      // linke Kante des Stapels
+  const stackTop  = vh - (FAB_EDGE + FAB_GAP + FAB_SIZE);          // Oberkante Sperr-Knopf
+  const stackBot  = vh - FAB_EDGE;
+
+  let rowTop = Infinity;
+  document.querySelectorAll(FAB_DODGE_ROWS).forEach(row => {
+    if (row.offsetParent === null) return;                          // ausgeblendet (z.B. Vorderseite)
+    const r = row.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    if (r.right <= fabLeft) return;                                 // links vorbei — kein Konflikt (iPad)
+    if (r.bottom <= stackTop || r.top >= stackBot) return;          // ober-/unterhalb — kein Konflikt
+    if (r.top < rowTop) rowTop = r.top;
+  });
+
+  let bottom = FAB_EDGE;
+  if (rowTop < Infinity) {
+    bottom = Math.round(vh - rowTop + 12);                          // Stift-Knopf über die Reihe heben
+    // nicht so weit, dass der Sperr-Knopf oben aus dem Bild wandert
+    const max = Math.max(FAB_EDGE, vh - FAB_GAP - FAB_SIZE - 8);
+    if (bottom > max) bottom = max;
+  }
+  root.style.setProperty('--fab-bottom', bottom + 'px');
+}
+
+// Beim Scrollen und Drehen neu messen (billig: ein paar getBoundingClientRect)
+window.addEventListener('scroll', updateFabDodge, { passive: true });
+window.addEventListener('resize', updateFabDodge);
+window.addEventListener('orientationchange', updateFabDodge);
 
 function buildDrawField(card, det) {
   const anchor = document.getElementById('draw-anchor');
@@ -3371,7 +3449,7 @@ function showModal({ title, body, actions }) {
   modalRoot.innerHTML = `
     <div class="modal-box">
       <h3>${title}</h3>
-      <div>${body}</div>
+      <div class="modal-body">${body}</div>
       <div class="modal-actions"></div>
     </div>`;
   const actionsWrap = modalRoot.querySelector('.modal-actions');
@@ -3936,11 +4014,16 @@ function toggleCardFace() {
   // Zeichenfeld wandert mit, damit die eigene Skizze neben der Lösung stehen bleibt
   updateDrawForFace(!isRevealed);
   typesetMath();
+  // Mit der Bewertungsreihe kommt/geht der Grund, warum die runden Knöpfe
+  // ausweichen müssen
+  updateFabDodge();
 }
 
 function typesetMath() {
   if (window.MathJax && window.MathJax.typesetPromise) {
-    window.MathJax.typesetPromise([document.getElementById('flashcard')]).catch(() => {});
+    // Nach dem Formelsatz steht die Karte anders hoch — die Knöpfe neu messen
+    window.MathJax.typesetPromise([document.getElementById('flashcard')])
+      .then(updateFabDodge).catch(() => {});
   }
 }
 
