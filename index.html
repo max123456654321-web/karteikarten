@@ -23,17 +23,25 @@
 })();
 </script>
 
-<!-- MathJax: Formeln in \( \), \[ \] und $$ $$ erkennen -->
+<!-- MathJax: Formeln in \( \), \[ \] und $$ $$ erkennen.
+     Ausgabe als SVG, nicht als HTML (CHTML): Auf dem iPad radierte Safari bei
+     CHTML-Formeln Teile der Zeichen weg, sobald die Seite neu gezeichnet wurde
+     (Zeichenfeld ausgeklappt, Sperre an) — weiße Streifen durch die Formel,
+     "=" nur noch als ein Strich, geschweifte Klammern halb weg. Bekannter
+     WebKit-Fehler (MathJax-Issue #2435); die SVG-Ausgabe ist davon nicht
+     betroffen. fontCache 'none': jede Formel trägt ihre Pfade selbst, ohne
+     <use>-Verweise auf IDs — die Kopie im Zeichenfeld hängt so an nichts. -->
 <script>
 window.MathJax = {
   tex: {
     inlineMath: [['\\(', '\\)']],
     displayMath: [['\\[', '\\]'], ['$$', '$$']]
   },
+  svg: { fontCache: 'none' },
   options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
 };
 </script>
-<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" id="MathJax-script" async></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-svg.js" id="MathJax-script" async></script>
 
 <!-- JSZip zum Entpacken der .apkg-Datei -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -1947,16 +1955,18 @@ function detectDrawing(card) {
 const GIVEN_LABEL_RE = /^(gegeben|geg\.?|vorgabe|vorlage|ausfüllen|auszufüllen)\s*:?$/i;
 
 // Elemente des Kartentextes — die Ebenen des Zeichenfelds selbst liegen mit im
-// Kartentext und dürfen nie als Vorlage dienen.
+// Kartentext und dürfen nie als Vorlage dienen. Ebenso wenig die SVGs, aus
+// denen MathJax Formeln setzt: das sind keine Skizzen.
 function outsideStack(list) {
-  return Array.from(list).filter(el => !el.closest('.draw-stack'));
+  return Array.from(list).filter(el => !el.closest('.draw-stack') && !el.closest('mjx-container'));
 }
 
 function givenLabelIn(root) {
   const els = root.querySelectorAll('div,p,span,b,strong,em,i,h1,h2,h3,h4,h5,h6,label,caption,legend,td,th');
   for (const el of els) {
     if (el.closest('.draw-stack')) continue;
-    if (el.querySelector('table,svg,img')) continue;   // Beschriftung enthält nie die Vorlage
+    // Beschriftung enthält nie die Vorlage
+    if (outsideStack(el.querySelectorAll('table,svg,img')).length) continue;
     const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
     if (GIVEN_LABEL_RE.test(t)) return el;
   }
@@ -2387,7 +2397,7 @@ function useDomSolution(f, backRoot) {
   const own = f.givenHtml || '';
 
   let sol = null;
-  const cands = Array.from(backRoot.querySelectorAll(isTable ? 'table' : 'svg'))
+  const cands = outsideStack(backRoot.querySelectorAll(isTable ? 'table' : 'svg'))
     .filter(el => el.outerHTML !== own);
   if (isTable) {
     // Die ausgefüllte Fassung ist die mit den wenigsten Leerfeldern.
