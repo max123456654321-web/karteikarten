@@ -483,7 +483,7 @@ window.MathJax = {
     /* etwas Luft, damit die Schalter am Rand beim Scrollen nicht angeschnitten wirken */
     margin: 0 -4px; padding: 0 4px;
   }
-  .modal-box .modal-actions { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; flex: none; }
+  .modal-box .modal-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; justify-content: flex-end; flex: none; }
 
   /* ---------- Einstellungen (Schalter) ---------- */
   .setting-row {
@@ -2087,7 +2087,7 @@ function discardDrawDraft(cardId) {
 
 // Wo man gerade ist — damit ein Neustart dorthin zurückfindet.
 function currentViewInfo() {
-  if (browseSession) return { type: 'browse', deckId: browseSession.deck.id, filter: browseSession.filter || 'all' };
+  if (browseSession) return { type: 'browse', deckId: browseSession.deck.id, filter: browseSession.filter || 'all', random: !!browseSession.random };
   if (currentSession) return { type: 'study', deckId: currentSession.deck.id };
   return null;
 }
@@ -4378,11 +4378,12 @@ let browseSession = null;
 
 // filter: 'all' (Durchsehen), 'fav' (nur Favoriten), 'exam' (nur Prüfungsfragen).
 // resumeCardId: nach einem Neuladen der App direkt wieder an diese Karte.
-async function startBrowseSession(deckId, filter = 'all', resumeCardId = null) {
+// random: Reihenfolge zufällig mischen (Prüfungsfragen "zufällig abfragen").
+async function startBrowseSession(deckId, filter = 'all', resumeCardId = null, random = false) {
   const deck = await Store.getDeck(deckId);
   if (!deck) return false;
   const all = await Store.getCardsForDeck(deckId);
-  const cards = filter === 'fav' ? all.filter(c => c.favorite)
+  let cards = filter === 'fav' ? all.filter(c => c.favorite)
     : filter === 'exam' ? all.filter(isExamCard)
     : all;
   if (cards.length === 0) {
@@ -4391,13 +4392,14 @@ async function startBrowseSession(deckId, filter = 'all', resumeCardId = null) {
       : 'Dieser Stapel enthält keine Karten');
     return false;
   }
+  if (random) cards = shuffle(cards);
   let index = 0;
   if (resumeCardId != null) {
     const i = cards.findIndex(c => c.id === resumeCardId);
     if (i !== -1) index = i;
   }
   browseSession = { deck, cards, index, mode: 'single', filter,
-    favoritesMode: filter === 'fav', examMode: filter === 'exam' };
+    favoritesMode: filter === 'fav', examMode: filter === 'exam', random };
   renderBrowseView();
   return true;
 }
@@ -4411,11 +4413,27 @@ function startFavoritesSession(deckId) {
   return startBrowseSession(deckId, 'fav');
 }
 
-// Prüfungsfragen lernen: wie Favoriten, aber die Auswahl trifft die App selbst —
-// anhand des roten Badges "PRÜFUNGSFRAGE", das der Skill anki-karten auf jede
-// belegte Prüfungsfrage setzt. Favoriten bleiben davon völlig unberührt.
-function startExamSession(deckId) {
-  return startBrowseSession(deckId, 'exam');
+// Prüfungsfragen lernen: wie Favoriten, aber die Auswahl trifft die App selbst
+// (isExamCard). Favoriten bleiben davon völlig unberührt. Vorher wird gefragt,
+// wie: der Reihe nach (wie Durchsehen) oder zufällig gemischt — beides ohne
+// Algorithmus, am Lernfortschritt ändert sich nichts.
+async function startExamSession(deckId) {
+  const deck = await Store.getDeck(deckId);
+  if (!deck) return;
+  const n = (await Store.getCardsForDeck(deckId)).filter(isExamCard).length;
+  if (!n) { showToast('Keine Prüfungsfragen in diesem Stapel'); return; }
+  showModal({
+    title: '🎓 Prüfungsfragen',
+    body: `<b>${n}</b> Prüfungsfrage${n === 1 ? '' : 'n'} in „${escapeHtml(deck.name)}“. Wie willst du sie durchgehen?<br><br>
+      <b>📋 Der Reihe nach</b> — wie Durchsehen, in der Reihenfolge des Stapels.<br>
+      <b>🔀 Zufällig</b> — alle Prüfungsfragen gemischt, eine nach der anderen abgefragt. Am Ende wird neu gemischt.<br><br>
+      Beides ohne Algorithmus: Der Lernfortschritt bleibt unverändert.`,
+    actions: [
+      { label: 'Abbrechen', class: 'secondary' },
+      { label: '📋 Der Reihe nach', class: 'secondary', onClick: () => { closeModal(); startBrowseSession(deckId, 'exam'); } },
+      { label: '🔀 Zufällig', class: 'primary', onClick: () => { closeModal(); startBrowseSession(deckId, 'exam', null, true); } }
+    ]
+  });
 }
 
 /* Erkennung einer Prüfungsfrage
@@ -4430,13 +4448,42 @@ const EXAM_WORD = 'PR(?:Ü|&Uuml;|&#220;|&#x0*dc;|UE)FUNGS(?:FRAGE|AUFGABE)';
 const EXAM_BADGE_RE = new RegExp('class\\s*=\\s*["\']?[^"\'>]*\\bbadge\\b[^>]*>\\s*' + EXAM_WORD, 'i');
 const EXAM_QUELLE_RE = /class\s*=\s*["']?quelle\s+pruef\b/i;
 const EXAM_TEXT_RE = new RegExp(EXAM_WORD);           // groß geschrieben, wie im Badge
+// Quellenzeile, die eine Prüfung nennt: GDP, Gedächtnisprotokoll, (Alt-)Klausur,
+// Klausurvorbereitung, Prüfung SoSe25, Prüfungstheorie, Repetitorium …
+const EXAM_SOURCE_RE = /\b(GDP|Ged(ä|&auml;|ae)chtnisprotokoll|Altklausur|Klausur|Pr(ü|&uuml;|ue)fung|Repetitorium)/i;
+// … außer die Zeile sagt ausdrücklich, dass es KEINE Prüfungsfrage ist
+// ("keine Prüfungsfrage", "selbst keine Prüfungsfrage", "nicht aus einem GDP belegt").
+const EXAM_SOURCE_NEG_RE = /\bkeine\s+Pr(ü|&uuml;|ue)fungsfrage|\bnicht\s+(aus\s+\S+\s+)?(GDP|Pr(ü|&uuml;|ue)fung|Klausur)\S*\s+belegt|\bnicht\s+[^·]*\bbelegt\b/i;
+const EXAM_TAG_RE = /(^|\s)pr(ü|ue)fungsfrage(\s|$)/i;
 
+// Text der Quellenzeile(n) <div class="quelle …">…</div>, ohne HTML
+function examSourceText(html) {
+  const out = [];
+  const re = /<div[^>]*class\s*=\s*["']?quelle\b[^>]*>([\s\S]*?)<\/div>/gi;
+  let m;
+  while ((m = re.exec(html))) out.push(m[1].replace(/<[^>]*>/g, ' '));
+  return out.join(' · ');
+}
+
+/* Zwei Stufen:
+   1. Badge PRÜFUNGSFRAGE (bzw. rote Quellenzeile) — belegte Prüfungsfrage.
+   2. Kein Badge, aber die Quellenzeile nennt eine Prüfung (GDP, Klausur,
+      Prüfungstheorie, Repetitorium/Klausurvorbereitung …) oder die Karte hat
+      das Anki-Tag "Pruefungsfrage" — prüfungsnah. Gewünscht am 24.09.2026:
+      "wenn es extra in der Quelle steht, soll es auch rein". Im EFEM-Stapel
+      sind das 11 Karten (5 davon mit Tag, aber ohne Badge).
+   Eine Quellenzeile, die ausdrücklich "keine Prüfungsfrage" bzw. "nicht aus
+   einem GDP belegt" sagt, zählt nie. */
 function isExamCard(card) {
   if (!card) return false;
   const html = card.mcData
     ? Object.values(card.mcData).filter(v => typeof v === 'string').join(' ') + ' ' + (card.front || '')
     : (card.front || '') + ' ' + (card.back || '');
-  return EXAM_BADGE_RE.test(html) || EXAM_QUELLE_RE.test(html) || EXAM_TEXT_RE.test(html);
+  if (EXAM_BADGE_RE.test(html) || EXAM_QUELLE_RE.test(html) || EXAM_TEXT_RE.test(html)) return true;
+  const quelle = examSourceText(html);
+  if (quelle && EXAM_SOURCE_NEG_RE.test(quelle)) return false;
+  if (EXAM_TAG_RE.test(card.tags || '')) return true;
+  return !!quelle && EXAM_SOURCE_RE.test(quelle);
 }
 
 // Kurzvorschau einer Karte für Kachel-/Listenansicht: Klartext (HTML-Tags
@@ -4460,7 +4507,7 @@ function browseHeaderHtml(activeMode) {
   return `
     <header class="topbar">
       <button class="back-btn" id="exit-browse">Fertig</button>
-      <h1 style="font-size:1.1rem">${escapeHtml(browseSession.deck.name)}${browseSession.favoritesMode ? ' ⭐' : ''}${browseSession.examMode ? ' 🎓' : ''}</h1>
+      <h1 style="font-size:1.1rem">${escapeHtml(browseSession.deck.name)}${browseSession.favoritesMode ? ' ⭐' : ''}${browseSession.examMode ? ' 🎓' : ''}${browseSession.random ? '🔀' : ''}</h1>
       <div class="browse-mode-switch">
         <button class="mode-btn ${activeMode === 'single' ? 'active' : ''}" data-mode="single" title="Einzelkarten">🔲</button>
         <button class="mode-btn ${activeMode === 'grid' ? 'active' : ''}" data-mode="grid" title="Kacheln">▦</button>
@@ -4699,7 +4746,9 @@ function renderBrowseSingleView() {
            traf die Karte (Doppeltipp) oder "Diese Karte löschen". -->
       <div class="browse-nav browse-nav-top">
         <button class="secondary" id="browse-prev" ${b.index === 0 ? 'disabled' : ''}>◀ Zurück</button>
-        <button class="secondary" id="browse-next" ${b.index === b.cards.length - 1 ? 'disabled' : ''}>Weiter ▶</button>
+        ${b.random && b.index === b.cards.length - 1
+          ? '<button class="secondary" id="browse-next">🔀 Neu mischen</button>'
+          : `<button class="secondary" id="browse-next" ${b.index === b.cards.length - 1 ? 'disabled' : ''}>Weiter ▶</button>`}
       </div>
       <div class="card-area">
         <button class="card-del-btn" id="browse-delete" title="Diese Karte dauerhaft löschen">🗑</button>
@@ -4726,6 +4775,13 @@ function renderBrowseSingleView() {
   });
   document.getElementById('browse-next').addEventListener('click', () => {
     if (browseSession.index < browseSession.cards.length - 1) { browseSession.index++; renderBrowseView(); }
+    else if (browseSession.random) {
+      // Zufallsmodus: nach der letzten Karte eine neue Runde, neu gemischt
+      browseSession.cards = shuffle(browseSession.cards);
+      browseSession.index = 0;
+      showToast('Alle durch — neu gemischt');
+      renderBrowseView();
+    }
   });
 
   const flashcard = document.getElementById('flashcard');
@@ -4896,7 +4952,7 @@ async function startApp() {
   try {
     ok = resume.view.type === 'study'
       ? await startStudySession(resume.view.deckId, resume.cardId)
-      : await startBrowseSession(resume.view.deckId, resume.view.filter || 'all', resume.cardId);
+      : await startBrowseSession(resume.view.deckId, resume.view.filter || 'all', resume.cardId, !!resume.view.random);
   } catch (e) { ok = false; }
   if (ok && drawDraft && drawDraft.cardId === resume.cardId) {
     persistDrawDraft();
